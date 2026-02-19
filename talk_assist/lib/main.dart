@@ -36,6 +36,9 @@ class _ChatScreenState extends State<ChatScreen> {
 
     setState(() {
       _messages.add(_ChatMessage(text: text, isUser: true));
+      _messages.add(
+        _ChatMessage(text: "Place Holder: ${Message.instance.latestUserInput}", isUser: false),
+      );
     });
 
     debugPrint("Latest input: ${Message.instance.latestUserInput}");
