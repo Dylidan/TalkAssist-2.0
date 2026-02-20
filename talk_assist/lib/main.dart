@@ -28,26 +28,59 @@ class _ChatScreenState extends State<ChatScreen> {
   final TextEditingController _controller = TextEditingController();
   final ScrollController _scrollController = ScrollController();
 
-  void _sendMessage() {
+  //Pipeline
+  void _sendMessage() async {
     final text = _controller.text.trim();
     if (text.isEmpty) return;
 
+    //locat/replace with corrct loading
+    final msgId = DateTime.now().microsecondsSinceEpoch.toString();
     Message.instance.addUserMessage(text);
 
     setState(() {
-      _messages.add(_ChatMessage(text: text, isUser: true));
       _messages.add(
-        _ChatMessage(text: "Place Holder: ${Message.instance.latestUserInput}", isUser: false),
-      );
+        _ChatMessage(
+          id: "u_$msgId", 
+          text: text, 
+          isUser: true
+        ));
+      _messages.add(
+        _ChatMessage(
+          //text: "Place Holder: ${Message.instance.latestUserInput}",
+          id: "a_$msgId",
+          text: "...",
+          isUser: false
+        ),);
+      //Message.instance.addAssistMsg("Place Holder: ${Message.instance.latestUserInput}");
     });
+    
+    await Future.delayed(const Duration(milliseconds: 600));
+    //Connect LLM (gen relpy)
+    final reply = await generateReply(text);
+
+    final idx = _messages.indexWhere((m) => m.id == "a_$msgId");
+    if (idx != -1) {
+      setState(() {
+        _messages[idx] = _ChatMessage(
+          id: "a_$msgId", 
+          text: reply, 
+          isUser: false);
+      });
+    }
+    Message.instance.addAssistMsg(reply);
 
     debugPrint("Latest input: ${Message.instance.latestUserInput}");
     debugPrint("History: ${Message.instance.conversationHistory}");
+    debugPrint("JSON: ${Message.instance.exportHistoryJson()}");
 
     _controller.clear();
     _scrollToBottom();
   }
 
+  Future<String> generateReply(String userText) async {
+  //Can replace with LLM call
+    return userText;
+  }
 
   void _scrollToBottom() {
     // Wait for the list to rebuild, then scroll.
@@ -129,9 +162,10 @@ class _ChatScreenState extends State<ChatScreen> {
 }
 
 class _ChatMessage {
+  final String id;
   final String text;
   final bool isUser;
-  _ChatMessage({required this.text, required this.isUser});
+  _ChatMessage({required this.text, required this.id, required this.isUser});
 }
 
 class _MessageBubble extends StatelessWidget {
