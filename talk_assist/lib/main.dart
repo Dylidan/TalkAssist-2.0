@@ -1,7 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa_onnx;
 import 'chat_screen.dart';
 
-void main() => runApp(const MainApp());
+void main() {
+  // Initialize sherpa_onnx bindings before running the app.
+  sherpa_onnx.initBindings();
+  runApp(const MainApp());
+}
 
 class MainApp extends StatelessWidget {
   const MainApp({super.key});

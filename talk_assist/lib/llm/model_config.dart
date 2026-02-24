@@ -50,7 +50,7 @@ class ModelConfig {
   static const int topK = 20; // for less random responses, avg = 40
   static const double topP = 0.8; // less random responses, avg = 0.9
 
-  /// Number of CPU threads for inference.
+  // Number of CPU threads for inference.
   static const int inferenceThreads =
       4; // Set to match emulator configuration (4 cores).
 
@@ -64,16 +64,16 @@ class ModelConfig {
   /// Same value as cold-start because emulator performance is uniformly slow.
   static const Duration steadyStateInferenceTimeout = Duration(seconds: 160);
 
-  /// Fallback reply when the local model isn't ready yet.
+  // Fallback reply when the local model isn't ready yet.
   static const String safeModeStatusMessage =
       "I am still setting up your local assistant on this device. "
       "The first setup can take up to 5 minutes.";
 
-  /// Reply shown when the conversation exceeds the context window.
+  // Reply shown when the conversation exceeds the context window.
   static const String contextWindowLimitReachedMessage =
       "Chat limit reached. Please say 'Start new chat' to continue.";
 
-  /// Thresholds for context window usage warnings (tokens remaining).
+  // Thresholds for context window usage warnings (tokens remaining).
   static const int contextWindowNearFullThresholdTokens = 96;
   static const int contextWindowFullThresholdTokens = 24;
 

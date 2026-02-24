@@ -5,6 +5,8 @@ import "package:flutter/widgets.dart";
 import "package:talk_assist/llm/history_store.dart";
 import "package:talk_assist/llm/llm_orchestrator.dart";
 import "package:talk_assist/message.dart";
+import "package:talk_assist/tts/piper_tts_service.dart";
+import "package:talk_assist/tts/tts_service.dart";
 
 /// Lightweight message object for the chat UI layer.
 /// Contains: an id for updates, the text content, and direction (user vs assistant).
@@ -28,18 +30,22 @@ class ChatUiMessage {
 /// Bridges the chat UI to the LLM backend.
 /// Manages the UI message list, delegates to [LlmOrchestrator] for replies, and handles history persistence with coalescing flushes.
 /// Implements [WidgetsBindingObserver] to flush on app lifecycle changes.
+/// Also integrates TTS to speak LLM replies aloud.
 class ChatController extends ChangeNotifier with WidgetsBindingObserver {
   ChatController({
     HistoryStore? historyStore,
     LlmOrchestrator? orchestrator,
+    TtsService? ttsService,
     Duration? historyFlushInterval,
   }) : _historyStore = historyStore ?? HistoryStore(),
        _orchestrator = orchestrator ?? LlmOrchestrator(),
+       _ttsService = ttsService ?? PiperTtsService(),
        _historyFlushInterval =
            historyFlushInterval ?? const Duration(seconds: 30);
 
   final HistoryStore _historyStore;
   final LlmOrchestrator _orchestrator;
+  final TtsService _ttsService;
   final Message _messageStore = Message.instance;
   final Duration _historyFlushInterval;
 
@@ -95,6 +101,10 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
     _orchestrator.setHistorySnapshot(_messageStore.historySnapshot());
 
     await _orchestrator.start();
+
+    // Start TTS initialization in background (non-blocking).
+    unawaited(_ttsService.init());
+
     _initialized = true;
     _historyDirty = false;
     _registerLifecycleObserver();
@@ -146,6 +156,12 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
     _orchestrator.setHistorySnapshot(_messageStore.historySnapshot());
     _markHistoryDirty();
     _notifyIfAlive();
+
+    // Speak the LLM reply aloud.
+    if (kDebugMode) {
+      debugPrint("CHAT: Triggering TTS for reply");
+    }
+    unawaited(_ttsService.speak(reply.text));
   }
 
   /// Flushes dirty history when the app goes to background/inactive/detached.
@@ -263,6 +279,7 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
 
     _disposed = true;
     unawaited(_orchestrator.dispose());
+    unawaited(_ttsService.dispose());
     super.dispose();
   }
 }
