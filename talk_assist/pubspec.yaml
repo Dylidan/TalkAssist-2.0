@@ -9,6 +9,13 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  archive: ^3.4.10
+  audioplayers: ^6.1.0
+  connectivity_plus: ^6.1.3
+  fllama: ^0.0.1
+  path_provider: ^2.1.5
+  shared_preferences: ^2.3.3
+  sherpa_onnx: ^1.12.25
 
 dev_dependencies:
   flutter_test:
