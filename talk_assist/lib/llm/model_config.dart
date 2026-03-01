@@ -77,6 +77,16 @@ class ModelConfig {
   static const int contextWindowNearFullThresholdTokens = 96;
   static const int contextWindowFullThresholdTokens = 24;
 
+  // ── OpenRouter (online) settings ──────────────────────────────────────────
+
+  /// Max tokens for OpenRouter API responses.
+  static const int openRouterMaxTokens = 512;
+
+  /// Sampling temperature for OpenRouter. Slightly higher than local for richer replies.
+  static const double openRouterTemperature = 0.7;
+
+  // ──────────────────────────────────────────────────────────────────────────
+
   /// Persona instructions for TinyLlama.
   /// Targets visually impaired users with simple, practical replies.
   /// Note: For some reason TinyLlama seems to like to continue the conversation even with instructions to not do so.
