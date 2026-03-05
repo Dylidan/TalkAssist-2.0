@@ -8,7 +8,7 @@ Talk Assist 2.0 will focus on mobile application development, starting with andr
 
 ## How this is build
 
-This project is build under flutter framework. The app uses the fllama Flutter plugin (v0.0.1) to run TinyLlama 1.1B Chat GGUF (Q4_K_M) locally. Virtial Device emulation is supported by Android Studio.
+This project is build under flutter framework. The app uses the llamadart Flutter plugin to run Qwen3.5-0.8B Chat GGUF (Q8_0) locally. Virtial Device emulation is supported by Android Studio.
 
 ## Current Virtial Device Setup and specs
 

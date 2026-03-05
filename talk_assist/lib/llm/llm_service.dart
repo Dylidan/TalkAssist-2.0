@@ -2,7 +2,7 @@ import "package:talk_assist/message.dart";
 
 /// Abstract interface for any LLM backend.
 /// Decouples the orchestrator from the specific inference engine.
-/// Both [FllamaLlmService] (on-device) and [SafeModeLlmService] (fallback)
+/// Both [LlamadartLlmService] (on-device) and [SafeModeLlmService] (fallback)
 /// implement this contract.
 abstract class LlmService {
   // Prepare the service for use. May be a no-op for stateless implementations.

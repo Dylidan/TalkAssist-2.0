@@ -3,7 +3,7 @@ import "package:talk_assist/llm/model_config.dart";
 import "package:talk_assist/message.dart";
 
 /// Fallback LLM service that returns canned responses.
-/// Used when the on-device TinyLlama model is not ready yet (still
+/// Used when the on-device Qwen3.5 model is not ready yet (still
 /// downloading or initializing). Never touches native code or network.
 class SafeModeLlmService implements LlmService {
   bool _initialized = false;

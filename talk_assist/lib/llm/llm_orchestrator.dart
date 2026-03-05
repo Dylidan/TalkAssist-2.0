@@ -4,7 +4,7 @@ import 'dart:io';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:talk_assist/llm/fllama_llm_service.dart';
+import 'package:talk_assist/llm/llamadart_llm_service.dart';
 import 'package:talk_assist/llm/llm_service.dart';
 import 'package:talk_assist/llm/model_repository.dart';
 import 'package:talk_assist/llm/open_router_llm_service.dart';
@@ -14,7 +14,7 @@ import 'package:talk_assist/message.dart';
 /// Result from [LlmOrchestrator.replyForUserInput].
 ///
 /// Pairs the reply text with its origin so the UI can distinguish
-/// between online (OpenRouter), local (fllama), and safe-mode fallback replies.
+/// between online (OpenRouter), local (llamadart), and safe-mode fallback replies.
 class LlmOrchestratorReply {
   const LlmOrchestratorReply({required this.text, required this.origin});
 
@@ -29,8 +29,8 @@ class LlmOrchestratorReply {
 ///
 /// Priority order:
 ///   1. **OpenRouter** (online) — used whenever an internet connection is detected.
-///   2. **FllamaLlmService** (on-device) — used when offline and the local
-///      TinyLlama model has been downloaded and initialised.
+///   2. **LlamadartLlmService** (on-device) — used when offline and the local
+///      Qwen3.5 model has been downloaded and initialised.
 ///   3. **SafeModeLlmService** (fallback) — used when neither of the above
 ///      can respond (e.g. first boot before the model is ready, no internet).
 ///
@@ -52,7 +52,7 @@ class LlmOrchestrator {
       modelRepository: repository,
       onlineLlmService: onlineLlmService ?? OpenRouterLlmService(),
       localLlmService:
-          localLlmService ?? FllamaLlmService(modelRepository: repository),
+          localLlmService ?? LlamadartLlmService(modelRepository: repository),
       safeModeLlmService: safeModeLlmService ?? SafeModeLlmService(),
       connectivityCheck:
           connectivityCheck ?? resolvedConnectivity.checkConnectivity,
@@ -65,11 +65,11 @@ class LlmOrchestrator {
     required LlmService localLlmService,
     required LlmService safeModeLlmService,
     required Future<List<ConnectivityResult>> Function() connectivityCheck,
-  })  : _modelRepository = modelRepository,
-        _onlineLlm = onlineLlmService,
-        _localLlm = localLlmService,
-        _safeModeLlm = safeModeLlmService,
-        _connectivityCheck = connectivityCheck;
+  }) : _modelRepository = modelRepository,
+       _onlineLlm = onlineLlmService,
+       _localLlm = localLlmService,
+       _safeModeLlm = safeModeLlmService,
+       _connectivityCheck = connectivityCheck;
 
   final ModelRepository _modelRepository;
   final LlmService _onlineLlm;
@@ -120,7 +120,7 @@ class LlmOrchestrator {
   ///
   /// Routing logic:
   ///   - Online  → try OpenRouter first.
-  ///   - OpenRouter fails or offline → try local fllama model.
+  ///   - OpenRouter fails or offline → try local llamadart model.
   ///   - Local model not ready → safe-mode fallback.
   Future<LlmOrchestratorReply> replyForUserInput({
     required String userInput,
@@ -177,7 +177,7 @@ class LlmOrchestrator {
         }
       }
 
-      // ── 2. Try local (fllama / TinyLlama) ─────────────────────────────────
+      // ── 2. Try local (llamadart / Qwen3.5) ────────────────────────────────
       final localReady = await _prepareLocalModel(triggerSource: 'send');
       if (localReady) {
         try {
@@ -215,8 +215,9 @@ class LlmOrchestrator {
       );
     } finally {
       if (kDebugMode) {
-        final elapsedMs =
-            DateTime.now().difference(requestStartedAt).inMilliseconds;
+        final elapsedMs = DateTime.now()
+            .difference(requestStartedAt)
+            .inMilliseconds;
         debugPrint('LLM request finished (elapsedMs=$elapsedMs).');
       }
     }
@@ -245,17 +246,34 @@ class LlmOrchestrator {
     if (!hasInternet) return false;
 
     try {
+      final downloadStartedAt = DateTime.now();
+      var lastLoggedBucket = 0;
+      var didLogCompletion = false;
       final model = await _modelRepository.ensureModelAvailable(
         onProgress: ({required int receivedBytes, required int totalBytes}) {
-          if (!kDebugMode) return;
-          final receivedMB = (receivedBytes / 1024 / 1024).toStringAsFixed(1);
-          final totalMB = totalBytes > 0
-              ? (totalBytes / 1024 / 1024).toStringAsFixed(1)
-              : 'unknown';
-          if (totalBytes > 0) {
-            final percent = (receivedBytes * 100 ~/ totalBytes);
+          if (!kDebugMode || totalBytes <= 0) return;
+
+          final percent = (receivedBytes * 100 ~/ totalBytes).clamp(0, 100);
+          final bucket = (percent ~/ 10) * 10;
+          final shouldLogBucket = bucket >= 10 && bucket > lastLoggedBucket;
+
+          if (shouldLogBucket) {
+            lastLoggedBucket = bucket;
+            final receivedMB = (receivedBytes / 1024 / 1024).toStringAsFixed(1);
+            final totalMB = (totalBytes / 1024 / 1024).toStringAsFixed(1);
+            final elapsed = DateTime.now().difference(downloadStartedAt);
+            final elapsedStr =
+                '${elapsed.inMinutes}m ${elapsed.inSeconds % 60}s';
             debugPrint(
-              'Model download: $percent% ($receivedMB MB / $totalMB MB)',
+              'Model download: $bucket% ($receivedMB / $totalMB MB) [elapsed: $elapsedStr]',
+            );
+          }
+
+          if (percent >= 100 && !didLogCompletion) {
+            didLogCompletion = true;
+            final total = DateTime.now().difference(downloadStartedAt);
+            debugPrint(
+              'Model download complete in ${total.inMinutes}m ${total.inSeconds % 60}s',
             );
           }
         },
@@ -265,7 +283,7 @@ class LlmOrchestrator {
       await _localLlm.init();
       _isLocalReady = true;
       if (kDebugMode) {
-        debugPrint('Local TinyLlama ready (trigger=$triggerSource).');
+        debugPrint('Local Qwen3.5 ready (trigger=$triggerSource).');
       }
       return true;
     } catch (e) {
@@ -280,9 +298,11 @@ class LlmOrchestrator {
   /// Strips safe-mode assistant messages before sending history to any LLM.
   List<ChatMessage> _historyForLlm(List<ChatMessage> history) {
     return history
-        .where((m) =>
-            m.role != MsgRole.assistant ||
-            m.assistantOrigin != AssistantOrigin.safeMode)
+        .where(
+          (m) =>
+              m.role != MsgRole.assistant ||
+              m.assistantOrigin != AssistantOrigin.safeMode,
+        )
         .toList(growable: false);
   }
 

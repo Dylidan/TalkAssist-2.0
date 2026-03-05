@@ -28,7 +28,7 @@ class ModelRecord {
   final int downloadedAtEpochMs;
 }
 
-/// Manages the TinyLlama GGUF model file lifecycle.
+/// Manages the Qwen3.5-0.8B GGUF model file lifecycle for [LlamadartLlmService].
 /// Checks [SharedPreferences] for a previously-configured path,
 /// discovers .gguf files in the models directory, or downloads from
 /// HuggingFace. Validates GGUF headers before accepting files.
