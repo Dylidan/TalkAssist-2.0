@@ -1,21 +1,20 @@
-/// Central configuration for the TinyLlama on-device LLM.
+/// Central configuration for the Qwen3.5-0.8B on-device LLM.
 /// All tunable parameters live here so changes are isolated to one file.
 /// This is the single source of truth for model identity, file conventions, context/generation settings, and system prompts.
 class ModelConfig {
   const ModelConfig._();
 
   // Human-readable model name for UI display.
-  static const String modelDisplayName = "TinyLlama";
-  static const String officialRepoId = "TinyLlama/TinyLlama-1.1B-Chat-v1.0";
+  static const String modelDisplayName = "Qwen3.5";
+  static const String officialRepoId = "unsloth/Qwen3.5-0.8B-GGUF";
   static const String officialModelApiUrl =
-      "https://huggingface.co/api/models/TinyLlama/TinyLlama-1.1B-Chat-v1.0";
+      "https://huggingface.co/api/models/unsloth/Qwen3.5-0.8B-GGUF";
   static const String fallbackGgufUrl =
-      "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf";
+      "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q8_0.gguf";
 
-  static const String preferredQuantizationHint = "q4_k_m";
+  static const String preferredQuantizationHint = "q8_0";
   static const String modelExtension = "gguf";
-  static const String preferredModelFileName =
-      "tinyllama-1.1b-chat-v1.0-q4_k_m.gguf";
+  static const String preferredModelFileName = "Qwen3.5-0.8B-Q8_0.gguf";
   static const String modelDirectoryName = "models";
 
   // Minimum valid GGUF file size (64 MB) to prevent partial downloads.
@@ -77,9 +76,18 @@ class ModelConfig {
   static const int contextWindowNearFullThresholdTokens = 96;
   static const int contextWindowFullThresholdTokens = 24;
 
-  /// Persona instructions for TinyLlama.
+  // ── OpenRouter (online) settings ──────────────────────────────────────────
+
+  /// Max tokens for OpenRouter API responses.
+  static const int openRouterMaxTokens = 512;
+
+  /// Sampling temperature for OpenRouter. Slightly higher than local for richer replies.
+  static const double openRouterTemperature = 0.7;
+
+  // ──────────────────────────────────────────────────────────────────────────
+
+  /// Persona instructions for Qwen3.5.
   /// Targets visually impaired users with simple, practical replies.
-  /// Note: For some reason TinyLlama seems to like to continue the conversation even with instructions to not do so.
   static const String systemPrompt =
       "You are TalkAssist, a friendly assistant for a visually impaired user. "
       "Use simple words, short sentences, and direct practical help. "
