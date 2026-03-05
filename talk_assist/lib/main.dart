@@ -3,10 +3,9 @@ import 'package:flutter/material.dart';
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa_onnx;
 import 'chat_screen.dart';
 
-void main() {
-  // Initialize sherpa_onnx bindings before running the app.
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
   sherpa_onnx.initBindings();
-void main() async {
   await dotenv.load(fileName: ".env");
   runApp(const MainApp());
 }

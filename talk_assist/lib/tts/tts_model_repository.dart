@@ -135,20 +135,37 @@ class TtsModelRepository {
     // Wrap the progress callback to add logging
     TtsModelDownloadProgress? wrappedProgress;
     if (onProgress != null || kDebugMode) {
-      var lastLoggedPercent = -1;
+      final downloadStartedAt = DateTime.now();
+      var lastLoggedBucket = 0;
+      var didLogCompletion = false;
       wrappedProgress = ({required int receivedBytes, required int totalBytes}) {
         onProgress?.call(receivedBytes: receivedBytes, totalBytes: totalBytes);
 
-        if (kDebugMode && totalBytes > 0) {
-          final percent = (receivedBytes * 100 ~/ totalBytes);
-          if (percent >= lastLoggedPercent + 10) {
-            final receivedMB = (receivedBytes / 1024 / 1024).toStringAsFixed(1);
-            final totalMB = (totalBytes / 1024 / 1024).toStringAsFixed(1);
-            debugPrint(
-              "TTS MODEL: Download progress $percent% ($receivedMB MB / $totalMB MB)",
-            );
-            lastLoggedPercent = percent;
-          }
+        if (!kDebugMode || totalBytes <= 0) {
+          return;
+        }
+
+        final percent = (receivedBytes * 100 ~/ totalBytes).clamp(0, 100);
+        final bucket = (percent ~/ 10) * 10;
+        final shouldLogBucket = bucket >= 10 && bucket > lastLoggedBucket;
+
+        if (shouldLogBucket) {
+          lastLoggedBucket = bucket;
+          final receivedMB = (receivedBytes / 1024 / 1024).toStringAsFixed(1);
+          final totalMB = (totalBytes / 1024 / 1024).toStringAsFixed(1);
+          final elapsed = DateTime.now().difference(downloadStartedAt);
+          final elapsedStr = "${elapsed.inMinutes}m ${elapsed.inSeconds % 60}s";
+          debugPrint(
+            "TTS MODEL: Download progress $bucket% ($receivedMB MB / $totalMB MB) [elapsed: $elapsedStr]",
+          );
+        }
+
+        if (percent >= 100 && !didLogCompletion) {
+          didLogCompletion = true;
+          final total = DateTime.now().difference(downloadStartedAt);
+          debugPrint(
+            "TTS MODEL: Download complete in ${total.inMinutes}m ${total.inSeconds % 60}s",
+          );
         }
       };
     }

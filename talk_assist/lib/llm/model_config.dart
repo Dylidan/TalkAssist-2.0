@@ -26,20 +26,20 @@ class ModelConfig {
   // Primary configuration (tuned for emulator constraints: 4 cores, 4GB RAM)
   /// Context window size in tokens is 256. Yes this is tight but necessary on slow
   /// emulators to keep decode batches small and responsive.
-  static const int contextWindowTokens = 256;
+  static const int contextWindowTokens = 1024;
 
   /// Batch size for prompt processing. Does NOT affect token generation speed.
   /// Larger batches can improve throughput but increase latency and memory usage.
   /// Kept small for emulator performance.
   /// It can also be 16 for slightly better context understanding at the cost of higher latency.
-  static const int batchSizeTokens = 32;
+  static const int batchSizeTokens = 64;
 
   /// Maximum prior messages to include in the LLM prompt.
   /// Keeps prompts short for the small context window.
   static const int maxHistoryMessages = 2;
 
   /// Maximum new tokens to generate per completion.
-  static const int maxPredictTokens = 16;
+  static const int maxPredictTokens = 64;
 
   // Sampling parameters for conservative, helpful replies
   // https://discuss.ai.google.dev/t/about-topk-topp-and-temprature/33094
