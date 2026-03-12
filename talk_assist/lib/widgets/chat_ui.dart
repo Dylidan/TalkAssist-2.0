@@ -88,7 +88,7 @@ class ChatUI extends StatelessWidget {
                                 onSubmitted: (_) => onSend(),
                                 style: const TextStyle(color: Colors.white, fontSize: 16),
                                 decoration: InputDecoration(
-                                  hintText: 'Message',
+                                  hintText: 'Message or /reminder Task | 2026-03-15 18:30',
                                   hintStyle: TextStyle(color: Colors.white.withOpacity(0.55)),
                                   border: InputBorder.none,
                                   isDense: true,

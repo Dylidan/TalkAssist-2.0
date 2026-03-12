@@ -5,6 +5,8 @@ import "package:flutter/widgets.dart";
 import "package:talk_assist/llm/history_store.dart";
 import "package:talk_assist/llm/llm_orchestrator.dart";
 import "package:talk_assist/message.dart";
+import "package:talk_assist/reminders/reminder_command.dart";
+import "package:talk_assist/reminders/reminder_service.dart";
 import "package:talk_assist/tts/piper_tts_service.dart";
 import "package:talk_assist/tts/tts_service.dart";
 
@@ -35,16 +37,19 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
   ChatController({
     HistoryStore? historyStore,
     LlmOrchestrator? orchestrator,
+    ReminderService? reminderService,
     TtsService? ttsService,
     Duration? historyFlushInterval,
   }) : _historyStore = historyStore ?? HistoryStore(),
        _orchestrator = orchestrator ?? LlmOrchestrator(),
+       _reminderService = reminderService ?? ReminderService(),
        _ttsService = ttsService ?? PiperTtsService(),
        _historyFlushInterval =
            historyFlushInterval ?? const Duration(seconds: 30);
 
   final HistoryStore _historyStore;
   final LlmOrchestrator _orchestrator;
+  final ReminderService _reminderService;
   final TtsService _ttsService;
   final Message _messageStore = Message.instance;
   final Duration _historyFlushInterval;
@@ -133,6 +138,22 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
     _markHistoryDirty();
     _notifyIfAlive();
 
+    final reminderParse = ReminderRequest.parse(text);
+    if (reminderParse.isReminderCommand) {
+      final reminderReply = await _handleReminderCommand(
+        assistantId: assistantId,
+        parseResult: reminderParse,
+      );
+      _messageStore.addAssistMsg(
+        reminderReply,
+        origin: AssistantOrigin.deviceAction,
+      );
+      _orchestrator.setHistorySnapshot(_messageStore.historySnapshot());
+      _markHistoryDirty();
+      _notifyIfAlive();
+      return;
+    }
+
     LlmOrchestratorReply reply;
     try {
       reply = await _orchestrator.replyForUserInput(
@@ -162,6 +183,32 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
       debugPrint("CHAT: Triggering TTS for reply");
     }
     unawaited(_ttsService.speak(reply.text));
+  }
+
+  Future<String> _handleReminderCommand({
+    required String assistantId,
+    required ReminderCommandParseResult parseResult,
+  }) async {
+    final errorMessage = parseResult.errorMessage;
+    if (errorMessage != null) {
+      _replaceMessage(
+        assistantId,
+        ChatUiMessage(id: assistantId, text: errorMessage, isUser: false),
+      );
+      return errorMessage;
+    }
+
+    final request = parseResult.request!;
+    final launchResult = await _reminderService.createReminder(request);
+    final replyText = launchResult.opened
+        ? launchResult.message
+        : "Reminder could not be opened: ${launchResult.message}";
+
+    _replaceMessage(
+      assistantId,
+      ChatUiMessage(id: assistantId, text: replyText, isUser: false),
+    );
+    return replyText;
   }
 
   /// Flushes dirty history when the app goes to background/inactive/detached.

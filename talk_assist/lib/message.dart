@@ -5,7 +5,7 @@ enum MsgRole { user, assistant }
 
 /// Tracks which service produced an assistant reply.
 /// Used to filter safe-mode echoes out of LLM context windows.
-enum AssistantOrigin { localLlm, safeMode, queuedReplay }
+enum AssistantOrigin { localLlm, safeMode, queuedReplay, deviceAction }
 
 /// A single message in the conversation.
 ///
