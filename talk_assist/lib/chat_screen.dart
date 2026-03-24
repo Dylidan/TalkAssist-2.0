@@ -3,6 +3,7 @@ import "dart:async";
 import "package:flutter/material.dart";
 import "package:talk_assist/chat/chat_controller.dart";
 import "widgets/chat_ui.dart";
+import 'package:talk_assist/stt/sherpa_stt_service.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
@@ -28,6 +29,9 @@ class _ChatScreenState extends State<ChatScreen> {
   final TextEditingController _controller = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   late final ChatController _chatController;
+  bool _isListening = false;
+  bool _isTranscribing = false;
+  late final SherpaSttService _sttService;
 
   @override
   void initState() {
@@ -37,6 +41,8 @@ class _ChatScreenState extends State<ChatScreen> {
     _chatController = ChatController();
     _chatController.addListener(_onChatControllerChanged);
     unawaited(_chatController.initialize());
+    _sttService = SherpaSttService();
+    _sttService.initialize();
   }
 
   void _onChatControllerChanged() {
@@ -85,12 +91,70 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
+  //Mic logic, if listening stop recird 
+  //if not start recording and transcribe when done
+  Future<void> _toggleMic() async {
+    if (_isTranscribing) return;
+
+    if (!_isListening) {
+      try {
+        await _chatController.stopSpeaking();
+
+        await _sttService.startRecording();
+
+        if (!mounted) return;
+        setState(() {
+          _isListening = true;
+        });
+      } catch (e) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Record failed: $e')),
+        );
+      }
+      return;
+    }
+
+    try {
+      setState(() {
+        _isListening = false;
+        _isTranscribing = true;
+      });
+
+      final text = await _sttService.stopRecordingAndTranscribe();
+
+      if (!mounted) return;
+
+      if (text != null && text.isNotEmpty) {
+        _controller.text = text;
+        _controller.selection = TextSelection.fromPosition(
+          TextPosition(offset: _controller.text.length),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No speech detected')),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Speech recognition failed: $e')),
+      );
+    } finally {
+      if (!mounted) return;
+      setState(() {
+        _isTranscribing = false;
+      });
+    }
+  }
+
   @override
   void dispose() {
     _chatController.removeListener(_onChatControllerChanged);
     _chatController.dispose();
     _controller.dispose();
     _scrollController.dispose();
+    _sttService.dispose();
     super.dispose();
   }
 
@@ -102,6 +166,9 @@ class _ChatScreenState extends State<ChatScreen> {
       textController: _controller,
       scrollController: _scrollController,
       onSend: _sendMessage,
+      onMicTap: _toggleMic,
+      isListening: _isListening,
+      isTranscribing: _isTranscribing,
     );
   }
 }

@@ -12,6 +12,9 @@ class ChatUI extends StatelessWidget {
   final TextEditingController textController;
   final ScrollController scrollController;
   final VoidCallback onSend;
+  final VoidCallback onMicTap;
+  final bool isListening;
+  final bool isTranscribing;
 
   const ChatUI({
     super.key,
@@ -20,6 +23,9 @@ class ChatUI extends StatelessWidget {
     required this.textController,
     required this.scrollController,
     required this.onSend,
+    required this.onMicTap,
+    required this.isListening,
+    required this.isTranscribing,
   });
 
   @override
@@ -97,6 +103,16 @@ class ChatUI extends StatelessWidget {
                               ),
                             ),
                             const SizedBox(width: 8),
+                            IconButton(
+                              onPressed: isTranscribing ? null : onMicTap,
+                              icon: isTranscribing
+                                  ? const SizedBox(
+                                      width: 20,
+                                      height: 20,
+                                      child: CircularProgressIndicator(strokeWidth: 2),
+                                    )
+                                  : Icon(isListening ? Icons.stop_circle : Icons.mic),
+                            ),
                             SendButton(
                               onPressed: onSend,
                               enabled: textController.text.trim().isNotEmpty,

@@ -16,8 +16,10 @@ dependencies:
   llamadart: ^0.6.4
   path_provider: ^2.1.5
   shared_preferences: ^2.3.3
+  record: ^6.2.0
   sherpa_onnx: ^1.12.25
   flutter_dotenv: ^5.2.1
+
 
 dev_dependencies:
   flutter_test:

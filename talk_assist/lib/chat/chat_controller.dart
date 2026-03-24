@@ -318,6 +318,11 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
+  //stop tts before start recording
+  Future<void> stopSpeaking() async {
+    await _ttsService.stop();
+  }
+
   @override
   void dispose() {
     _historyFlushTimer?.cancel();
