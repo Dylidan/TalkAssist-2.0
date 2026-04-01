@@ -54,74 +54,255 @@ class ChatMessage {
   }
 }
 
+/// A single persisted conversation thread.
+class ConversationThread {
+  ConversationThread({
+    required this.id,
+    required this.title,
+    required this.createdAt,
+    required this.updatedAt,
+    List<ChatMessage>? messages,
+  }) : messages = messages ?? <ChatMessage>[];
+
+  final String id;
+  String title;
+  final DateTime createdAt;
+  DateTime updatedAt;
+  final List<ChatMessage> messages;
+
+  bool get hasMessages => messages.isNotEmpty;
+
+  String get preview {
+    if (messages.isEmpty) {
+      return "Empty conversation";
+    }
+    return messages.last.text.trim();
+  }
+
+  Map<String, dynamic> toJson() {
+    return <String, dynamic>{
+      "id": id,
+      "title": title,
+      "createdAt": createdAt.toIso8601String(),
+      "updatedAt": updatedAt.toIso8601String(),
+      "messages": messages
+          .map((message) => message.toJson())
+          .toList(growable: false),
+    };
+  }
+
+  factory ConversationThread.fromJson(Map<String, dynamic> json) {
+    final decodedMessages = json["messages"];
+    final messages = <ChatMessage>[];
+    if (decodedMessages is List) {
+      for (final item in decodedMessages) {
+        if (item is! Map) {
+          continue;
+        }
+        try {
+          messages.add(ChatMessage.fromJson(Map<String, dynamic>.from(item)));
+        } catch (_) {
+          continue;
+        }
+      }
+    }
+
+    final createdAt =
+        DateTime.tryParse(json["createdAt"]?.toString() ?? "") ??
+        (messages.isNotEmpty ? messages.first.timestamp : DateTime.now());
+    final updatedAt =
+        DateTime.tryParse(json["updatedAt"]?.toString() ?? "") ??
+        (messages.isNotEmpty ? messages.last.timestamp : createdAt);
+
+    return ConversationThread(
+      id: json["id"]?.toString() ?? _conversationIdFrom(createdAt),
+      title: _normalizedConversationTitle(
+        raw: json["title"]?.toString(),
+        messages: messages,
+      ),
+      createdAt: createdAt,
+      updatedAt: updatedAt,
+      messages: messages,
+    );
+  }
+}
+
+/// Serializable bundle of all saved conversations and the selected one.
+class ConversationArchive {
+  const ConversationArchive({
+    required this.conversations,
+    this.activeConversationId,
+  });
+
+  final List<ConversationThread> conversations;
+  final String? activeConversationId;
+
+  Map<String, dynamic> toJson() {
+    return <String, dynamic>{
+      "activeConversationId": activeConversationId,
+      "conversations": conversations
+          .map((conversation) => conversation.toJson())
+          .toList(growable: false),
+    };
+  }
+}
+
 /// Global in-memory conversation store.
 ///
-/// Holds the full conversation history and provides filtered snapshots
-/// (e.g., excluding safe-mode replies) for building LLM prompts.
+/// Owns all conversations, the currently active conversation, and filtered
+/// snapshots for building LLM prompts.
 class Message {
   static final Message instance = Message._internal();
 
   Message._internal();
 
-  /// The most recent user input, used for prompt deduplication.
+  /// The most recent user input for the active conversation.
   String latestUserInput = "";
 
-  /// Complete conversation history, including safe-mode responses.
-  final List<ChatMessage> conversationHistory = <ChatMessage>[];
+  final List<ConversationThread> _conversations = <ConversationThread>[];
+  String? _activeConversationId;
 
-  void addUserMessage(String text) {
-    latestUserInput = text;
-    conversationHistory.add(
-      ChatMessage(role: MsgRole.user, text: text, timestamp: DateTime.now()),
+  List<ConversationThread> conversationsSnapshot() {
+    return _conversations
+        .map(
+          (conversation) => ConversationThread(
+            id: conversation.id,
+            title: conversation.title,
+            createdAt: conversation.createdAt,
+            updatedAt: conversation.updatedAt,
+            messages: List<ChatMessage>.from(conversation.messages),
+          ),
+        )
+        .toList(growable: false);
+  }
+
+  String get activeConversationId {
+    return _ensureConversationAvailable().id;
+  }
+
+  ConversationThread get activeConversation => _ensureConversationAvailable();
+
+  void replaceConversations(
+    List<ConversationThread> conversations, {
+    String? activeConversationId,
+  }) {
+    _conversations
+      ..clear()
+      ..addAll(
+        conversations.map(
+          (conversation) => ConversationThread(
+            id: conversation.id,
+            title: conversation.title,
+            createdAt: conversation.createdAt,
+            updatedAt: conversation.updatedAt,
+            messages: List<ChatMessage>.from(conversation.messages),
+          ),
+        ),
+      );
+
+    if (_conversations.isEmpty) {
+      _activeConversationId = null;
+      createConversation();
+      return;
+    }
+
+    final requestedId = activeConversationId;
+    final hasRequestedId = requestedId != null &&
+        _conversations.any((conversation) => conversation.id == requestedId);
+    _activeConversationId = hasRequestedId ? requestedId : _conversations.first.id;
+    _syncLatestUserInput();
+  }
+
+  String createConversation({String title = "New chat"}) {
+    final now = DateTime.now();
+    final conversation = ConversationThread(
+      id: _conversationIdFrom(now),
+      title: title,
+      createdAt: now,
+      updatedAt: now,
     );
+    _conversations.insert(0, conversation);
+    _activeConversationId = conversation.id;
+    latestUserInput = "";
+    return conversation.id;
+  }
+
+  bool setActiveConversation(String id) {
+    final conversation = _conversationById(id);
+    if (conversation == null) {
+      return false;
+    }
+    _activeConversationId = conversation.id;
+    _syncLatestUserInput();
+    return true;
+  }
+
+  void addUserMessage(String text, {String? conversationId}) {
+    final conversation = _conversationForMutation(conversationId);
+    final now = DateTime.now();
+    final hadUserMessages = conversation.messages.any(
+      (message) => message.role == MsgRole.user,
+    );
+
+    conversation.messages.add(
+      ChatMessage(role: MsgRole.user, text: text, timestamp: now),
+    );
+    conversation.updatedAt = now;
+
+    if (!hadUserMessages && _isDefaultConversationTitle(conversation.title)) {
+      conversation.title = _titleFromUserText(text);
+    }
+
+    _moveConversationToFront(conversation.id);
+    if (conversation.id == _activeConversationId) {
+      latestUserInput = text;
+    }
   }
 
   void addAssistMsg(
     String text, {
     AssistantOrigin origin = AssistantOrigin.localLlm,
+    String? conversationId,
   }) {
-    conversationHistory.add(
+    final conversation = _conversationForMutation(conversationId);
+    final now = DateTime.now();
+    conversation.messages.add(
       ChatMessage(
         role: MsgRole.assistant,
         text: text,
-        timestamp: DateTime.now(),
+        timestamp: now,
         assistantOrigin: origin,
       ),
     );
-  }
-
-  void replaceHistory(List<ChatMessage> history) {
-    conversationHistory
-      ..clear()
-      ..addAll(history);
-
-    latestUserInput = "";
-    for (var index = history.length - 1; index >= 0; index -= 1) {
-      final item = history[index];
-      if (item.role == MsgRole.user) {
-        latestUserInput = item.text;
-        break;
-      }
+    conversation.updatedAt = now;
+    _moveConversationToFront(conversation.id);
+    if (conversation.id == _activeConversationId) {
+      _syncLatestUserInput();
     }
   }
 
+  ConversationArchive archiveSnapshot() {
+    return ConversationArchive(
+      conversations: conversationsSnapshot(),
+      activeConversationId: _activeConversationId,
+    );
+  }
+
   String exportHistoryJson() {
-    final list = conversationHistory
-        .map((message) => message.toJson())
-        .toList();
-    return jsonEncode(list);
+    return jsonEncode(archiveSnapshot().toJson());
   }
 
-  List<ChatMessage> historySnapshot() {
-    return List<ChatMessage>.from(conversationHistory);
+  List<ChatMessage> historySnapshot({String? conversationId}) {
+    final conversation = _conversationForRead(conversationId);
+    return List<ChatMessage>.from(conversation.messages);
   }
 
-  /// Returns history with safe-mode assistant messages stripped out.
-  ///
-  /// The local LLM should never see fallback echo text in its context,
-  /// as that would confuse the model's understanding of the conversation.
-  List<ChatMessage> historyForLlm({bool includeSafeModeAssistant = false}) {
-    return conversationHistory
+  /// Returns active or selected history with safe-mode assistant messages stripped out.
+  List<ChatMessage> historyForLlm({
+    bool includeSafeModeAssistant = false,
+    String? conversationId,
+  }) {
+    return historySnapshot(conversationId: conversationId)
         .where((message) {
           if (message.role != MsgRole.assistant) {
             return true;
@@ -146,6 +327,59 @@ class Message {
         )
         .toList(growable: false);
   }
+
+  ConversationThread _ensureConversationAvailable() {
+    if (_conversations.isEmpty) {
+      createConversation();
+    }
+    return _conversationForRead(null);
+  }
+
+  ConversationThread _conversationForRead(String? conversationId) {
+    final resolvedId = conversationId ?? _activeConversationId;
+    final conversation = resolvedId == null ? null : _conversationById(resolvedId);
+    if (conversation != null) {
+      return conversation;
+    }
+    return _conversations.first;
+  }
+
+  ConversationThread _conversationForMutation(String? conversationId) {
+    if (_conversations.isEmpty) {
+      createConversation();
+    }
+    return _conversationForRead(conversationId);
+  }
+
+  ConversationThread? _conversationById(String id) {
+    for (final conversation in _conversations) {
+      if (conversation.id == id) {
+        return conversation;
+      }
+    }
+    return null;
+  }
+
+  void _moveConversationToFront(String id) {
+    final index = _conversations.indexWhere((conversation) => conversation.id == id);
+    if (index <= 0) {
+      return;
+    }
+    final conversation = _conversations.removeAt(index);
+    _conversations.insert(0, conversation);
+  }
+
+  void _syncLatestUserInput() {
+    latestUserInput = "";
+    final conversation = _conversationForRead(null);
+    for (var index = conversation.messages.length - 1; index >= 0; index -= 1) {
+      final item = conversation.messages[index];
+      if (item.role == MsgRole.user) {
+        latestUserInput = item.text;
+        break;
+      }
+    }
+  }
 }
 
 MsgRole _parseRole(String? raw) {
@@ -167,4 +401,40 @@ AssistantOrigin? _parseAssistantOrigin(String? raw) {
     }
   }
   return null;
+}
+
+String _conversationIdFrom(DateTime time) {
+  return "conv_${time.microsecondsSinceEpoch}";
+}
+
+String _titleFromUserText(String text) {
+  final normalized = text.trim().replaceAll(RegExp(r"\s+"), " ");
+  if (normalized.isEmpty) {
+    return "New chat";
+  }
+  if (normalized.length <= 36) {
+    return normalized;
+  }
+  return "${normalized.substring(0, 36).trimRight()}...";
+}
+
+bool _isDefaultConversationTitle(String title) {
+  return title.trim().isEmpty || title.trim().toLowerCase() == "new chat";
+}
+
+String _normalizedConversationTitle({
+  required String? raw,
+  required List<ChatMessage> messages,
+}) {
+  final trimmed = raw?.trim() ?? "";
+  if (trimmed.isNotEmpty) {
+    return trimmed;
+  }
+
+  for (final message in messages) {
+    if (message.role == MsgRole.user && message.text.trim().isNotEmpty) {
+      return _titleFromUserText(message.text);
+    }
+  }
+  return "New chat";
 }

@@ -2,8 +2,9 @@ import "dart:async";
 
 import "package:flutter/material.dart";
 import "package:talk_assist/chat/chat_controller.dart";
-import "widgets/chat_ui.dart";
+import "package:talk_assist/chat/chat_view_models.dart";
 import 'package:talk_assist/stt/sherpa_stt_service.dart';
+import "widgets/chat_ui.dart";
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
@@ -12,20 +13,9 @@ class ChatScreen extends StatefulWidget {
   State<ChatScreen> createState() => _ChatScreenState();
 }
 
-class ChatMessage {
-  final String id;
-  final String text;
-  final bool isUser;
-
-  const ChatMessage({
-    required this.id,
-    required this.text,
-    required this.isUser,
-  });
-}
-
 class _ChatScreenState extends State<ChatScreen> {
-  final List<ChatMessage> _messages = <ChatMessage>[];
+  final List<ChatMessageView> _messages = <ChatMessageView>[];
+  final List<ConversationTabView> _conversations = <ConversationTabView>[];
   final TextEditingController _controller = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   late final ChatController _chatController;
@@ -55,10 +45,22 @@ class _ChatScreenState extends State<ChatScreen> {
         ..clear()
         ..addAll(
           _chatController.messages.map(
-            (message) => ChatMessage(
+            (message) => ChatMessageView(
               id: message.id,
               text: message.text,
               isUser: message.isUser,
+            ),
+          ),
+        );
+      _conversations
+        ..clear()
+        ..addAll(
+          _chatController.conversations.map(
+            (conversation) => ConversationTabView(
+              id: conversation.id,
+              title: conversation.title,
+              preview: conversation.preview,
+              isActive: conversation.isActive,
             ),
           ),
         );
@@ -75,6 +77,17 @@ class _ChatScreenState extends State<ChatScreen> {
 
     _controller.clear();
     await _chatController.sendUserMessage(text);
+    _scrollToBottom();
+  }
+
+  Future<void> _createConversation() async {
+    _controller.clear();
+    await _chatController.createConversation();
+    _scrollToBottom();
+  }
+
+  Future<void> _selectConversation(String conversationId) async {
+    await _chatController.selectConversation(conversationId);
     _scrollToBottom();
   }
 
@@ -163,9 +176,12 @@ class _ChatScreenState extends State<ChatScreen> {
     return ChatUI(
       title: "TalkAssist 2.0",
       messages: _messages,
+      conversations: _conversations,
       textController: _controller,
       scrollController: _scrollController,
       onSend: _sendMessage,
+      onNewConversation: _createConversation,
+      onSelectConversation: _selectConversation,
       onMicTap: _toggleMic,
       isListening: _isListening,
       isTranscribing: _isTranscribing,

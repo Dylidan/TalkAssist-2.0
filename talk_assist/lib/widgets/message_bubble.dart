@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
-import '../chat_screen.dart';
+import 'package:talk_assist/chat/chat_view_models.dart';
 
 class MessageBubble extends StatelessWidget {
-  final ChatMessage message;
+  final ChatMessageView message;
   const MessageBubble({super.key, required this.message});
 
   @override
