@@ -21,6 +21,7 @@ class _ChatScreenState extends State<ChatScreen> {
   late final ChatController _chatController;
   bool _isListening = false;
   bool _isTranscribing = false;
+  int _recordSessionId = 0;
   late final SherpaSttService _sttService;
 
   @override
@@ -104,6 +105,17 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
+  bool _looksLikeReminderCandidate(String text) {
+    final lower = text.toLowerCase();
+    return lower.startsWith('/reminder') ||
+        lower.contains('remind') ||
+        lower.contains('reminder') ||
+        lower.contains("don't let me forget") ||
+        lower.contains('dont let me forget') ||
+        lower.contains('set a reminder') ||
+        lower.contains('set reminder');
+  }
+
   //Mic logic, if listening stop recird 
   //if not start recording and transcribe when done
   Future<void> _toggleMic() async {
@@ -113,12 +125,13 @@ class _ChatScreenState extends State<ChatScreen> {
       try {
         await _chatController.stopSpeaking();
 
-        await _sttService.startRecording();
-
         if (!mounted) return;
+        final sessionId = ++_recordSessionId;
         setState(() {
           _isListening = true;
         });
+
+        unawaited(_runAutoStopTranscription(sessionId));
       } catch (e) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
@@ -129,35 +142,54 @@ class _ChatScreenState extends State<ChatScreen> {
     }
 
     try {
+      _recordSessionId += 1;
+      await _sttService.cancel();
+      if (!mounted) return;
       setState(() {
         _isListening = false;
-        _isTranscribing = true;
       });
-
-      final text = await _sttService.stopRecordingAndTranscribe();
-
+    } catch (_) {
       if (!mounted) return;
+      setState(() {
+        _isListening = false;
+      });
+    }
+  }
+
+  Future<void> _runAutoStopTranscription(int sessionId) async {
+    try {
+      final text = await _sttService.recordUntilSilenceAndTranscribe();
+
+      if (!mounted || sessionId != _recordSessionId) return;
 
       if (text != null && text.isNotEmpty) {
-        _controller.text = text;
-        _controller.selection = TextSelection.fromPosition(
-          TextPosition(offset: _controller.text.length),
-        );
+        if (_looksLikeReminderCandidate(text)) {
+          _controller.clear();
+          await _chatController.sendUserMessage(text);
+          _scrollToBottom();
+        } else {
+          _controller.text = text;
+          _controller.selection = TextSelection.fromPosition(
+            TextPosition(offset: _controller.text.length),
+          );
+        }
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('No speech detected')),
         );
       }
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted || sessionId != _recordSessionId) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Speech recognition failed: $e')),
       );
     } finally {
-      if (!mounted) return;
-      setState(() {
-        _isTranscribing = false;
-      });
+      if (mounted && sessionId == _recordSessionId) {
+        setState(() {
+          _isListening = false;
+          _isTranscribing = false;
+        });
+      }
     }
   }
 

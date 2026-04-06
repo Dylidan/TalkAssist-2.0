@@ -6,6 +6,7 @@ import "package:talk_assist/llm/history_store.dart";
 import "package:talk_assist/llm/llm_orchestrator.dart";
 import "package:talk_assist/message.dart";
 import "package:talk_assist/reminders/reminder_command.dart";
+import "package:talk_assist/reminders/reminder_nlu_service.dart";
 import "package:talk_assist/reminders/reminder_service.dart";
 import "package:talk_assist/tts/piper_tts_service.dart";
 import "package:talk_assist/tts/tts_service.dart";
@@ -58,6 +59,7 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
     HistoryStore? historyStore,
     LlmOrchestrator? orchestrator,
     ReminderService? reminderService,
+    ReminderNluService? reminderNluService,
     TtsService? ttsService,
     Duration? historyFlushInterval,
   }) : _historyStore = historyStore ?? HistoryStore(),
@@ -65,11 +67,15 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
        _reminderService = reminderService ?? ReminderService(),
        _ttsService = ttsService ?? PiperTtsService(),
        _historyFlushInterval =
-           historyFlushInterval ?? const Duration(seconds: 30);
+           historyFlushInterval ?? const Duration(seconds: 30) {
+    _reminderNluService =
+        reminderNluService ?? ReminderNluService(orchestrator: _orchestrator);
+  }
 
   final HistoryStore _historyStore;
   final LlmOrchestrator _orchestrator;
   final ReminderService _reminderService;
+  late final ReminderNluService _reminderNluService;
   final TtsService _ttsService;
   final Message _messageStore = Message.instance;
   final Duration _historyFlushInterval;
@@ -209,6 +215,9 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
 
     final reminderParse = ReminderRequest.parse(text);
     if (reminderParse.isReminderCommand) {
+      if (kDebugMode) {
+        debugPrint("REMINDER: Matched slash command reminder flow.");
+      }
       final reminderReply = await _handleReminderCommand(
         assistantId: assistantId,
         parseResult: reminderParse,
@@ -222,6 +231,32 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
       _markHistoryDirty();
       _notifyIfAlive();
       unawaited(_flushHistoryIfDirty(reason: "reminder-reply"));
+      return;
+    }
+
+    if (kDebugMode) {
+      debugPrint("REMINDER_NLU: Trying natural-language reminder parse for: $text");
+    }
+    final llmReminderParse = await _reminderNluService.tryParse(text);
+    if (kDebugMode) {
+      debugPrint(
+        "REMINDER_NLU: Result isReminderCommand=${llmReminderParse.isReminderCommand}, hasRequest=${llmReminderParse.request != null}, error=${llmReminderParse.errorMessage}",
+      );
+    }
+    if (llmReminderParse.isReminderCommand) {
+      final reminderReply = await _handleReminderCommand(
+        assistantId: assistantId,
+        parseResult: llmReminderParse,
+      );
+      _messageStore.addAssistMsg(
+        reminderReply,
+        origin: AssistantOrigin.deviceAction,
+        conversationId: conversationId,
+      );
+      _orchestrator.setHistorySnapshot(_messageStore.historyForLlm());
+      _markHistoryDirty();
+      _notifyIfAlive();
+      unawaited(_flushHistoryIfDirty(reason: "reminder-reply-llm"));
       return;
     }
 

@@ -2,6 +2,7 @@
 //First check mic permission, make sure model files exist (download if needed
 //then  record WAV to a temp file, then pass the WAV to sherpa get a transcription string.
 
+import 'dart:async';
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
@@ -16,6 +17,79 @@ class SherpaSttService implements SttService {
   String? _modelDirPath;
   String? _currentPath;
   bool _initialized = false;
+
+  @override
+  Future<String?> recordUntilSilenceAndTranscribe({
+    Duration maxDuration = const Duration(seconds: 20),
+    Duration silenceDuration = const Duration(milliseconds: 1200),
+    Duration leadingSilenceGrace = const Duration(seconds: 2),
+    double silenceThresholdDb = -42.0,
+  }) async {
+    await startRecording();
+
+    final startedAt = DateTime.now();
+    final completer = Completer<String?>();
+    StreamSubscription<Amplitude>? amplitudeSubscription;
+    Timer? maxTimer;
+    Timer? silenceTimer;
+    var completed = false;
+
+    Future<void> finishRecording() async {
+      if (completed) return;
+      completed = true;
+
+      await amplitudeSubscription?.cancel();
+      maxTimer?.cancel();
+      silenceTimer?.cancel();
+
+      try {
+        final text = await stopRecordingAndTranscribe();
+        if (!completer.isCompleted) {
+          completer.complete(text);
+        }
+      } catch (error, stackTrace) {
+        if (!completer.isCompleted) {
+          completer.completeError(error, stackTrace);
+        }
+      }
+    }
+
+    maxTimer = Timer(maxDuration, () {
+      unawaited(finishRecording());
+    });
+
+    amplitudeSubscription = _recorder
+        .onAmplitudeChanged(const Duration(milliseconds: 200))
+        .listen(
+          (amplitude) {
+            if (completed) {
+              return;
+            }
+
+            final elapsed = DateTime.now().difference(startedAt);
+            if (elapsed < leadingSilenceGrace) {
+              return;
+            }
+
+            final isSilent = amplitude.current < silenceThresholdDb;
+            if (isSilent) {
+              silenceTimer ??= Timer(silenceDuration, () {
+                unawaited(finishRecording());
+              });
+              return;
+            }
+
+            silenceTimer?.cancel();
+            silenceTimer = null;
+          },
+          onError: (Object error, StackTrace stackTrace) {
+            unawaited(finishRecording());
+          },
+          cancelOnError: false,
+        );
+
+    return completer.future;
+  }
 
   @override
   Future<void> initialize() async {
