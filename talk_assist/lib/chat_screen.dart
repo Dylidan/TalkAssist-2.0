@@ -92,6 +92,43 @@ class _ChatScreenState extends State<ChatScreen> {
     _scrollToBottom();
   }
 
+  Future<void> _deleteConversation(String conversationId) async {
+    final isDeletingActiveConversation = _conversations.any(
+      (conversation) => conversation.id == conversationId && conversation.isActive,
+    );
+    final shouldDelete = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text("Delete conversation?"),
+          content: const Text(
+            "This removes the conversation from saved history on this device.",
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text("Cancel"),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text("Delete"),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (shouldDelete != true || !mounted) {
+      return;
+    }
+
+    if (isDeletingActiveConversation) {
+      _controller.clear();
+    }
+    await _chatController.deleteConversation(conversationId);
+    _scrollToBottom();
+  }
+
   void _scrollToBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!_scrollController.hasClients) {
@@ -214,6 +251,7 @@ class _ChatScreenState extends State<ChatScreen> {
       onSend: _sendMessage,
       onNewConversation: _createConversation,
       onSelectConversation: _selectConversation,
+      onDeleteConversation: _deleteConversation,
       onMicTap: _toggleMic,
       isListening: _isListening,
       isTranscribing: _isTranscribing,

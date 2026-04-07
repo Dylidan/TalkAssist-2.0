@@ -237,6 +237,33 @@ class Message {
     return true;
   }
 
+  bool hasConversation(String id) {
+    return _conversationById(id) != null;
+  }
+
+  bool deleteConversation(String id) {
+    final index = _conversations.indexWhere((conversation) => conversation.id == id);
+    if (index < 0) {
+      return false;
+    }
+
+    _conversations.removeAt(index);
+
+    if (_conversations.isEmpty) {
+      _activeConversationId = null;
+      createConversation();
+      return true;
+    }
+
+    if (_activeConversationId == id) {
+      final nextIndex = index >= _conversations.length ? _conversations.length - 1 : index;
+      _activeConversationId = _conversations[nextIndex].id;
+    }
+
+    _syncLatestUserInput();
+    return true;
+  }
+
   void addUserMessage(String text, {String? conversationId}) {
     final conversation = _conversationForMutation(conversationId);
     final now = DateTime.now();

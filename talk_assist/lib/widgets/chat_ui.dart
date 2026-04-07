@@ -18,6 +18,7 @@ class ChatUI extends StatelessWidget {
     required this.onSend,
     required this.onNewConversation,
     required this.onSelectConversation,
+    required this.onDeleteConversation,
     required this.onMicTap,
     required this.isListening,
     required this.isTranscribing,
@@ -31,6 +32,7 @@ class ChatUI extends StatelessWidget {
   final VoidCallback onSend;
   final VoidCallback onNewConversation;
   final ValueChanged<String> onSelectConversation;
+  final ValueChanged<String> onDeleteConversation;
   final VoidCallback onMicTap;
   final bool isListening;
   final bool isTranscribing;
@@ -44,6 +46,7 @@ class ChatUI extends StatelessWidget {
           conversations: conversations,
           onNewConversation: onNewConversation,
           onSelectConversation: onSelectConversation,
+          onDeleteConversation: onDeleteConversation,
         );
 
         return Scaffold(
@@ -200,11 +203,13 @@ class _ConversationPanel extends StatelessWidget {
     required this.conversations,
     required this.onNewConversation,
     required this.onSelectConversation,
+    required this.onDeleteConversation,
   });
 
   final List<ConversationTabView> conversations;
   final VoidCallback onNewConversation;
   final ValueChanged<String> onSelectConversation;
+  final ValueChanged<String> onDeleteConversation;
 
   @override
   Widget build(BuildContext context) {
@@ -276,6 +281,9 @@ class _ConversationPanel extends StatelessWidget {
                                     Navigator.of(context).pop();
                                   }
                                 },
+                                onDelete: () {
+                                  onDeleteConversation(conversation.id);
+                                },
                               );
                             },
                           ),
@@ -294,10 +302,12 @@ class _ConversationTile extends StatelessWidget {
   const _ConversationTile({
     required this.conversation,
     required this.onTap,
+    required this.onDelete,
   });
 
   final ConversationTabView conversation;
   final VoidCallback onTap;
+  final VoidCallback onDelete;
 
   @override
   Widget build(BuildContext context) {
@@ -321,26 +331,43 @@ class _ConversationTile extends StatelessWidget {
           ),
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-            child: Column(
+            child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  conversation.title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.w700,
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        conversation.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        conversation.preview,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: Colors.white.withOpacity(0.68),
+                          height: 1.25,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-                const SizedBox(height: 4),
-                Text(
-                  conversation.preview,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: Colors.white.withOpacity(0.68),
-                    height: 1.25,
+                const SizedBox(width: 8),
+                IconButton(
+                  onPressed: onDelete,
+                  splashRadius: 20,
+                  tooltip: "Delete conversation",
+                  icon: Icon(
+                    Icons.delete_outline,
+                    color: Colors.white.withOpacity(0.72),
                   ),
                 ),
               ],
