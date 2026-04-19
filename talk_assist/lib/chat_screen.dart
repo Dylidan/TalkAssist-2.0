@@ -1,6 +1,10 @@
-import 'package:flutter/material.dart';
-import 'package:talk_assist/message.dart';
-import 'widgets/chat_ui.dart';
+import "dart:async";
+
+import "package:flutter/material.dart";
+import "package:talk_assist/chat/chat_controller.dart";
+import "package:talk_assist/chat/chat_view_models.dart";
+import 'package:talk_assist/stt/sherpa_stt_service.dart';
+import "widgets/chat_ui.dart";
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
@@ -9,59 +13,127 @@ class ChatScreen extends StatefulWidget {
   State<ChatScreen> createState() => _ChatScreenState();
 }
 
-class ChatMessage {
-  final String id;
-  final String text;
-  final bool isUser;
-  const ChatMessage({required this.id, required this.text, required this.isUser});
-}
-
 class _ChatScreenState extends State<ChatScreen> {
-  final List<ChatMessage> _messages = [];
+  final List<ChatMessageView> _messages = <ChatMessageView>[];
+  final List<ConversationTabView> _conversations = <ConversationTabView>[];
   final TextEditingController _controller = TextEditingController();
   final ScrollController _scrollController = ScrollController();
+  late final ChatController _chatController;
+  bool _isListening = false;
+  bool _isTranscribing = false;
+  int _recordSessionId = 0;
+  late final SherpaSttService _sttService;
 
   @override
   void initState() {
     super.initState();
     _controller.addListener(() => setState(() {}));
+
+    _chatController = ChatController();
+    _chatController.addListener(_onChatControllerChanged);
+    unawaited(_chatController.initialize());
+    _sttService = SherpaSttService();
+    _sttService.initialize();
   }
 
-  void _sendMessage() async {
-    final text = _controller.text.trim();
-    if (text.isEmpty) return;
-
-    final msgId = DateTime.now().microsecondsSinceEpoch.toString();
-    Message.instance.addUserMessage(text);
-
-    setState(() {
-      _messages.add(ChatMessage(id: "u_$msgId", text: text, isUser: true));
-      _messages.add(ChatMessage(id: "a_$msgId", text: "...", isUser: false));
-    });
-
-    await Future.delayed(const Duration(milliseconds: 600));
-    final reply = await generateReply(text);
-
-    final idx = _messages.indexWhere((m) => m.id == "a_$msgId");
-    if (idx != -1) {
-      setState(() {
-        _messages[idx] = ChatMessage(id: "a_$msgId", text: reply, isUser: false);
-      });
+  void _onChatControllerChanged() {
+    if (!mounted) {
+      return;
     }
 
-    Message.instance.addAssistMsg(reply);
+    setState(() {
+      _messages
+        ..clear()
+        ..addAll(
+          _chatController.messages.map(
+            (message) => ChatMessageView(
+              id: message.id,
+              text: message.text,
+              isUser: message.isUser,
+            ),
+          ),
+        );
+      _conversations
+        ..clear()
+        ..addAll(
+          _chatController.conversations.map(
+            (conversation) => ConversationTabView(
+              id: conversation.id,
+              title: conversation.title,
+              preview: conversation.preview,
+              isActive: conversation.isActive,
+            ),
+          ),
+        );
+    });
 
-    _controller.clear();
     _scrollToBottom();
   }
 
-  Future<String> generateReply(String userText) async {
-    return userText; // replace with LLM later
+  Future<void> _sendMessage() async {
+    final text = _controller.text.trim();
+    if (text.isEmpty) {
+      return;
+    }
+
+    _controller.clear();
+    await _chatController.sendUserMessage(text);
+    _scrollToBottom();
+  }
+
+  Future<void> _createConversation() async {
+    _controller.clear();
+    await _chatController.createConversation();
+    _scrollToBottom();
+  }
+
+  Future<void> _selectConversation(String conversationId) async {
+    await _chatController.selectConversation(conversationId);
+    _scrollToBottom();
+  }
+
+  Future<void> _deleteConversation(String conversationId) async {
+    final isDeletingActiveConversation = _conversations.any(
+      (conversation) => conversation.id == conversationId && conversation.isActive,
+    );
+    final shouldDelete = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text("Delete conversation?"),
+          content: const Text(
+            "This removes the conversation from saved history on this device.",
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text("Cancel"),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text("Delete"),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (shouldDelete != true || !mounted) {
+      return;
+    }
+
+    if (isDeletingActiveConversation) {
+      _controller.clear();
+    }
+    await _chatController.deleteConversation(conversationId);
+    _scrollToBottom();
   }
 
   void _scrollToBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!_scrollController.hasClients) return;
+      if (!_scrollController.hasClients) {
+        return;
+      }
       _scrollController.animateTo(
         _scrollController.position.maxScrollExtent,
         duration: const Duration(milliseconds: 250),
@@ -70,21 +142,119 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
+  bool _looksLikeReminderCandidate(String text) {
+    final lower = text.toLowerCase();
+    return lower.startsWith('/reminder') ||
+        lower.contains('remind') ||
+        lower.contains('reminder') ||
+        lower.contains("don't let me forget") ||
+        lower.contains('dont let me forget') ||
+        lower.contains('set a reminder') ||
+        lower.contains('set reminder');
+  }
+
+  //Mic logic, if listening stop recird 
+  //if not start recording and transcribe when done
+  Future<void> _toggleMic() async {
+    if (_isTranscribing) return;
+
+    if (!_isListening) {
+      try {
+        await _chatController.stopSpeaking();
+
+        if (!mounted) return;
+        final sessionId = ++_recordSessionId;
+        setState(() {
+          _isListening = true;
+        });
+
+        unawaited(_runAutoStopTranscription(sessionId));
+      } catch (e) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Record failed: $e')),
+        );
+      }
+      return;
+    }
+
+    try {
+      _recordSessionId += 1;
+      await _sttService.cancel();
+      if (!mounted) return;
+      setState(() {
+        _isListening = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _isListening = false;
+      });
+    }
+  }
+
+  Future<void> _runAutoStopTranscription(int sessionId) async {
+    try {
+      final text = await _sttService.recordUntilSilenceAndTranscribe();
+
+      if (!mounted || sessionId != _recordSessionId) return;
+
+      if (text != null && text.isNotEmpty) {
+        if (_looksLikeReminderCandidate(text)) {
+          _controller.clear();
+          await _chatController.sendUserMessage(text);
+          _scrollToBottom();
+        } else {
+          _controller.text = text;
+          _controller.selection = TextSelection.fromPosition(
+            TextPosition(offset: _controller.text.length),
+          );
+        }
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No speech detected')),
+        );
+      }
+    } catch (e) {
+      if (!mounted || sessionId != _recordSessionId) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Speech recognition failed: $e')),
+      );
+    } finally {
+      if (mounted && sessionId == _recordSessionId) {
+        setState(() {
+          _isListening = false;
+          _isTranscribing = false;
+        });
+      }
+    }
+  }
+
   @override
   void dispose() {
+    _chatController.removeListener(_onChatControllerChanged);
+    _chatController.dispose();
     _controller.dispose();
     _scrollController.dispose();
+    _sttService.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     return ChatUI(
-      title: 'TalkAssist 2.0',
+      title: "TalkAssist 2.0",
       messages: _messages,
+      conversations: _conversations,
       textController: _controller,
       scrollController: _scrollController,
       onSend: _sendMessage,
+      onNewConversation: _createConversation,
+      onSelectConversation: _selectConversation,
+      onDeleteConversation: _deleteConversation,
+      onMicTap: _toggleMic,
+      isListening: _isListening,
+      isTranscribing: _isTranscribing,
     );
   }
 }
