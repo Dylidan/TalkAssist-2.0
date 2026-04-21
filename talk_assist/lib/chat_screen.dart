@@ -21,6 +21,7 @@ class _ChatScreenState extends State<ChatScreen> {
   late final ChatController _chatController;
   bool _isListening = false;
   bool _isTranscribing = false;
+  String _activeServiceLabel = 'initializing';
   int _recordSessionId = 0;
   late final SherpaSttService _sttService;
 
@@ -65,6 +66,7 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
           ),
         );
+      _activeServiceLabel = _chatController.activeServiceLabel;
     });
 
     _scrollToBottom();
@@ -255,6 +257,7 @@ class _ChatScreenState extends State<ChatScreen> {
       onMicTap: _toggleMic,
       isListening: _isListening,
       isTranscribing: _isTranscribing,
+      llmStatus: LlmStatusView(label: _activeServiceLabel),
     );
   }
 }

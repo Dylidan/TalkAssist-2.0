@@ -22,6 +22,7 @@ class ChatUI extends StatelessWidget {
     required this.onMicTap,
     required this.isListening,
     required this.isTranscribing,
+    required this.llmStatus,
   });
 
   final String title;
@@ -36,6 +37,7 @@ class ChatUI extends StatelessWidget {
   final VoidCallback onMicTap;
   final bool isListening;
   final bool isTranscribing;
+  final LlmStatusView llmStatus;
 
   @override
   Widget build(BuildContext context) {
@@ -86,6 +88,12 @@ class ChatUI extends StatelessWidget {
                     ),
                   ),
                   centerTitle: false,
+                  actions: [
+                    Padding(
+                      padding: const EdgeInsets.only(right: 16),
+                      child: _LlmStatusIndicator(status: llmStatus),
+                    ),
+                  ],
                 ),
               ),
             ),
@@ -375,6 +383,45 @@ class _ConversationTile extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _LlmStatusIndicator extends StatelessWidget {
+  const _LlmStatusIndicator({required this.status});
+
+  final LlmStatusView status;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 8,
+          height: 8,
+          decoration: BoxDecoration(
+            color: status.dotColor,
+            shape: BoxShape.circle,
+            boxShadow: [
+              BoxShadow(
+                color: status.dotColor.withOpacity(0.6),
+                blurRadius: 6,
+                spreadRadius: 1,
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 6),
+        Text(
+          status.label,
+          style: TextStyle(
+            color: Colors.white.withOpacity(0.75),
+            fontSize: 12,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+      ],
     );
   }
 }
