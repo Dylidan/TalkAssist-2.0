@@ -232,6 +232,46 @@ class LlmOrchestrator {
     }
   }
 
+  Future<String?> runLocalStructuredTask({required String taskPrompt}) async {
+    await start();
+
+    if (kDebugMode) {
+      debugPrint(
+        'LLM structured task started (promptChars=${taskPrompt.length}).',
+      );
+    }
+
+    final localReady = await _prepareLocalModel(
+      triggerSource: 'structured-task',
+    );
+    if (!localReady) {
+      if (kDebugMode) {
+        debugPrint('LLM structured task aborted: local model not ready.');
+      }
+      return null;
+    }
+
+    try {
+      final output = await _localLlm.generateReply(
+        userInput: taskPrompt,
+        history: const <ChatMessage>[],
+      );
+      final normalized = output.trim();
+      if (kDebugMode) {
+        final preview = normalized.length > 400
+            ? '${normalized.substring(0, 400)}...'
+            : normalized;
+        debugPrint('LLM structured task output=$preview');
+      }
+      return normalized.isEmpty ? null : normalized;
+    } catch (error) {
+      if (kDebugMode) {
+        debugPrint('LLM structured task failed: $error');
+      }
+      return null;
+    }
+  }
+
   // ── Local model preparation ────────────────────────────────────────────────
 
   Future<bool> _prepareLocalModel({required String triggerSource}) {

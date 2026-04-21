@@ -6,6 +6,7 @@ import "package:talk_assist/llm/history_store.dart";
 import "package:talk_assist/llm/llm_orchestrator.dart";
 import "package:talk_assist/message.dart";
 import "package:talk_assist/reminders/reminder_command.dart";
+import "package:talk_assist/reminders/reminder_nlu_service.dart";
 import "package:talk_assist/reminders/reminder_service.dart";
 import "package:talk_assist/tts/piper_tts_service.dart";
 import "package:talk_assist/tts/tts_service.dart";
@@ -46,7 +47,10 @@ class _PendingUiMessage {
     required this.message,
   });
 
+  /// Conversation that should display this temporary placeholder message.
   final String conversationId;
+
+  /// UI message shown while a real assistant response is still pending.
   final ChatUiMessage message;
 }
 
@@ -57,6 +61,7 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
   ChatController({
     HistoryStore? historyStore,
     LlmOrchestrator? orchestrator,
+    ReminderNluService? reminderNluService,
     ReminderService? reminderService,
     TtsService? ttsService,
     Duration? historyFlushInterval,
@@ -65,17 +70,26 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
        _reminderService = reminderService ?? ReminderService(),
        _ttsService = ttsService ?? PiperTtsService(),
        _historyFlushInterval =
-           historyFlushInterval ?? const Duration(seconds: 30);
+           historyFlushInterval ?? const Duration(seconds: 30) {
+    _reminderNluService =
+        reminderNluService ?? ReminderNluService(orchestrator: _orchestrator);
+  }
 
   final HistoryStore _historyStore;
   final LlmOrchestrator _orchestrator;
+  late final ReminderNluService _reminderNluService;
   final ReminderService _reminderService;
   final TtsService _ttsService;
   final Message _messageStore = Message.instance;
   final Duration _historyFlushInterval;
+
+  /// Temporary assistant placeholders such as the "..." bubble.
   final List<_PendingUiMessage> _pendingMessages = <_PendingUiMessage>[];
 
+  /// Guards initialization so concurrent callers share the same startup work.
   Future<void>? _initializeFuture;
+
+  /// Prevents overlapping history writes when multiple flushes are requested.
   Future<void>? _historyFlushFuture;
   Timer? _historyFlushTimer;
   bool _historyDirty = false;
@@ -87,6 +101,7 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
   String get activeConversationId => _messageStore.activeConversationId;
   String get activeServiceLabel => _activeServiceLabel;
 
+  /// Conversation list already shaped for the UI, including which tab is active.
   List<ChatConversationSummary> get conversations {
     final activeId = activeConversationId;
     return _messageStore
@@ -103,6 +118,8 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
         .toList(growable: false);
   }
 
+  /// Renderable messages for the active conversation.
+  /// Stored history is combined with any temporary pending assistant bubble.
   List<ChatUiMessage> get messages {
     final activeId = activeConversationId;
     final history = _messageStore.historySnapshot(conversationId: activeId);
@@ -118,6 +135,8 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
     );
   }
 
+  /// Loads persisted chat history, primes the orchestrator, and starts helpers
+  /// such as lifecycle observation and periodic history flushing.
   Future<void> initialize() async {
     if (_initialized || _disposed) {
       return;
@@ -137,6 +156,7 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
     });
   }
 
+  /// Performs the one-time startup sequence after `initialize` claims ownership.
   Future<void> _initializeInternal() async {
     final archive = await _historyStore.loadArchive();
     _messageStore.replaceConversations(
@@ -157,6 +177,7 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
     _notifyIfAlive();
   }
 
+  /// Starts a fresh conversation and persists the updated conversation list.
   Future<void> createConversation() async {
     if (!_initialized) {
       await initialize();
@@ -169,6 +190,7 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
     unawaited(_flushHistoryIfDirty(reason: "new-conversation"));
   }
 
+  /// Switches the active chat thread shown by the UI.
   Future<void> selectConversation(String conversationId) async {
     if (!_initialized) {
       await initialize();
@@ -184,6 +206,27 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
     unawaited(_flushHistoryIfDirty(reason: "select-conversation"));
   }
 
+  /// Deletes one conversation, updates the active selection if needed, and
+  /// persists the revised archive.
+  Future<void> deleteConversation(String conversationId) async {
+    if (!_initialized) {
+      await initialize();
+    }
+
+    if (!_messageStore.deleteConversation(conversationId)) {
+      return;
+    }
+
+    _removePendingMessagesForConversation(conversationId);
+    _orchestrator.setHistorySnapshot(_messageStore.historyForLlm());
+    _markHistoryDirty();
+    _notifyIfAlive();
+    unawaited(_flushHistoryIfDirty(reason: "delete-conversation"));
+  }
+
+  /// Main entry point for user input.
+  /// Saves the user message, shows a pending assistant bubble, then routes the
+  /// input through reminder handling or the LLM before storing the final reply.
   Future<void> sendUserMessage(String rawInput) async {
     final text = rawInput.trim();
     if (text.isEmpty || _disposed) {
@@ -215,6 +258,9 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
         assistantId: assistantId,
         parseResult: reminderParse,
       );
+      if (!_messageStore.hasConversation(conversationId)) {
+        return;
+      }
       _messageStore.addAssistMsg(
         reminderReply,
         origin: AssistantOrigin.deviceAction,
@@ -228,7 +274,36 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
 
-    LlmOrchestratorReply reply;
+    if (kDebugMode) {
+      debugPrint("REMINDER_NLU: Trying natural-language reminder parse for: $text");
+    }
+    final llmReminderParse = await _reminderNluService.tryParse(text);
+    if (kDebugMode) {
+      debugPrint(
+        "REMINDER_NLU: Result isReminderCommand=${llmReminderParse.isReminderCommand}, hasRequest=${llmReminderParse.request != null}, error=${llmReminderParse.errorMessage}",
+      );
+    }
+    if (llmReminderParse.isReminderCommand) {
+      final reminderReply = await _handleReminderCommand(
+        assistantId: assistantId,
+        parseResult: llmReminderParse,
+      );
+      if (!_messageStore.hasConversation(conversationId)) {
+        return;
+      }
+      _messageStore.addAssistMsg(
+        reminderReply,
+        origin: AssistantOrigin.deviceAction,
+        conversationId: conversationId,
+      );
+      _orchestrator.setHistorySnapshot(_messageStore.historyForLlm());
+      _markHistoryDirty();
+      _notifyIfAlive();
+      unawaited(_flushHistoryIfDirty(reason: "reminder-reply-llm"));
+      return;
+    }
+
+    late final LlmOrchestratorReply reply;
     try {
       reply = await _orchestrator.replyForUserInput(
         userInput: text,
@@ -242,6 +317,10 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
       );
     }
 
+    if (!_messageStore.hasConversation(conversationId)) {
+      _removePendingMessage(assistantId);
+      return;
+    }
     _removePendingMessage(assistantId);
     _messageStore.addAssistMsg(
       reply.text,
@@ -260,6 +339,8 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
     unawaited(_ttsService.speak(reply.text));
   }
 
+  /// Converts a parsed reminder request into a device action reply string.
+  /// This also clears the temporary pending assistant placeholder.
   Future<String> _handleReminderCommand({
     required String assistantId,
     required ReminderCommandParseResult parseResult,
@@ -296,6 +377,8 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  /// Schedules a history save only when needed and coalesces overlapping calls
+  /// into a single write operation.
   Future<void> _flushHistoryIfDirty({required String reason}) {
     if (_disposed || !_initialized || !_historyDirty) {
       return Future<void>.value();
@@ -318,6 +401,8 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
     });
   }
 
+  /// Writes the current archive snapshot to storage.
+  /// If saving fails, the dirty flag is restored so a later retry can persist it.
   Future<void> _flushHistoryInternal({required String reason}) async {
     final archive = _messageStore.archiveSnapshot();
     _historyDirty = false;
@@ -333,6 +418,8 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  /// Periodically persists conversation history so the app does not rely only
+  /// on lifecycle events or disposal to save user progress.
   void _startHistoryFlushTimer() {
     _historyFlushTimer?.cancel();
     _historyFlushTimer = Timer.periodic(_historyFlushInterval, (_) {
@@ -340,10 +427,12 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
     });
   }
 
+  /// Marks in-memory state as needing a future disk flush.
   void _markHistoryDirty() {
     _historyDirty = true;
   }
 
+  /// Hooks this controller into Flutter app lifecycle events once.
   void _registerLifecycleObserver() {
     if (_isObserverRegistered) {
       return;
@@ -360,6 +449,7 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
     _isObserverRegistered = false;
   }
 
+  /// Adapts domain chat messages into lightweight UI models with stable IDs.
   List<ChatUiMessage> _mapHistoryToUiMessages(List<ChatMessage> history) {
     return List<ChatUiMessage>.generate(history.length, (index) {
       final message = history[index];
@@ -372,14 +462,24 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
     });
   }
 
+  /// Removes a temporary assistant placeholder once a final response is ready.
   void _removePendingMessage(String id) {
     _pendingMessages.removeWhere((entry) => entry.message.id == id);
   }
 
+  /// Clears any temporary placeholders that belonged to a removed conversation.
+  void _removePendingMessagesForConversation(String conversationId) {
+    _pendingMessages.removeWhere(
+      (entry) => entry.conversationId == conversationId,
+    );
+  }
+
+  /// Stops any currently playing text-to-speech output.
   Future<void> stopSpeaking() async {
     await _ttsService.stop();
   }
 
+  /// Notifies listeners only while this controller is still valid.
   void _notifyIfAlive() {
     if (_disposed) {
       return;
@@ -388,6 +488,7 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   @override
+  /// Cleans up timers, lifecycle hooks, persistence, and background services.
   void dispose() {
     _historyFlushTimer?.cancel();
     _unregisterLifecycleObserver();
