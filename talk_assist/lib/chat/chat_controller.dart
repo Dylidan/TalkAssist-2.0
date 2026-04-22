@@ -230,6 +230,7 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> sendUserMessage(
     String rawInput, {
     bool speakReply = true,
+    bool awaitReplySpeechCompletion = false,
   }) async {
     final text = rawInput.trim();
     if (text.isEmpty || _disposed) {
@@ -340,7 +341,11 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
       debugPrint("CHAT: Triggering TTS for reply");
     }
     if (speakReply) {
-      unawaited(_ttsService.speak(reply.text));
+      if (awaitReplySpeechCompletion) {
+        await _ttsService.speakAndWait(reply.text);
+      } else {
+        unawaited(_ttsService.speak(reply.text));
+      }
     }
   }
 

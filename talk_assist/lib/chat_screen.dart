@@ -20,7 +20,6 @@ class _ChatScreenState extends State<ChatScreen> {
   final TextEditingController _controller = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   late final ChatController _chatController;
-  Future<void> _pendingSpeechSubmission = Future<void>.value();
   bool _isVoiceModeActive = false;
   bool _isWakeWordReady = false;
   bool _isListening = false;
@@ -176,6 +175,7 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _submitSpeechTranscript(
     String text, {
     bool speakReply = true,
+    bool awaitReplySpeechCompletion = false,
   }) async {
     final cleaned = text.trim();
     if (cleaned.isEmpty) {
@@ -183,37 +183,12 @@ class _ChatScreenState extends State<ChatScreen> {
     }
 
     _controller.clear();
-    await _chatController.sendUserMessage(cleaned, speakReply: speakReply);
+    await _chatController.sendUserMessage(
+      cleaned,
+      speakReply: speakReply,
+      awaitReplySpeechCompletion: awaitReplySpeechCompletion,
+    );
     _scrollToBottom();
-  }
-
-  void _enqueueSpeechTranscript(String text, int sessionId) {
-    final cleaned = text.trim();
-    if (cleaned.isEmpty) {
-      return;
-    }
-
-    _pendingSpeechSubmission = _pendingSpeechSubmission
-        .catchError((_) {})
-        .then((_) async {
-          if (!mounted || sessionId != _recordSessionId) {
-            return;
-          }
-
-          try {
-            await _submitSpeechTranscript(
-              cleaned,
-              speakReply: false,
-            );
-          } catch (e) {
-            if (!mounted || sessionId != _recordSessionId) {
-              return;
-            }
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Send failed: $e')),
-            );
-          }
-        });
   }
 
   Future<void> _toggleMic() async {
@@ -324,7 +299,11 @@ class _ChatScreenState extends State<ChatScreen> {
         });
 
         if (text != null && text.isNotEmpty) {
-          _enqueueSpeechTranscript(text, sessionId);
+          await _submitSpeechTranscript(
+            text,
+            speakReply: true,
+            awaitReplySpeechCompletion: true,
+          );
         } else {
           debugPrint("VOICE MODE: No speech detected, re-arming recorder");
         }
