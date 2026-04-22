@@ -20,6 +20,7 @@ class ChatUI extends StatelessWidget {
     required this.onSelectConversation,
     required this.onDeleteConversation,
     required this.onMicTap,
+    required this.isVoiceModeActive,
     required this.isListening,
     required this.isTranscribing,
     required this.llmStatus,
@@ -35,6 +36,7 @@ class ChatUI extends StatelessWidget {
   final ValueChanged<String> onSelectConversation;
   final ValueChanged<String> onDeleteConversation;
   final VoidCallback onMicTap;
+  final bool isVoiceModeActive;
   final bool isListening;
   final bool isTranscribing;
   final LlmStatusView llmStatus;
@@ -166,8 +168,10 @@ class ChatUI extends StatelessWidget {
                                       ),
                                       const SizedBox(width: 8),
                                       IconButton(
-                                        onPressed: isTranscribing ? null : onMicTap,
-                                        icon: isTranscribing
+                                        onPressed: isTranscribing && !isVoiceModeActive
+                                            ? null
+                                            : onMicTap,
+                                        icon: isTranscribing && !isVoiceModeActive
                                             ? const SizedBox(
                                                 width: 20,
                                                 height: 20,
@@ -176,7 +180,7 @@ class ChatUI extends StatelessWidget {
                                                 ),
                                               )
                                             : Icon(
-                                                isListening
+                                                isVoiceModeActive
                                                     ? Icons.stop_circle
                                                     : Icons.mic,
                                               ),

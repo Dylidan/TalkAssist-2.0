@@ -227,7 +227,10 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
   /// Main entry point for user input.
   /// Saves the user message, shows a pending assistant bubble, then routes the
   /// input through reminder handling or the LLM before storing the final reply.
-  Future<void> sendUserMessage(String rawInput) async {
+  Future<void> sendUserMessage(
+    String rawInput, {
+    bool speakReply = true,
+  }) async {
     final text = rawInput.trim();
     if (text.isEmpty || _disposed) {
       return;
@@ -333,10 +336,12 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
     _notifyIfAlive();
     unawaited(_flushHistoryIfDirty(reason: "assistant-reply"));
 
-    if (kDebugMode) {
+    if (speakReply && kDebugMode) {
       debugPrint("CHAT: Triggering TTS for reply");
     }
-    unawaited(_ttsService.speak(reply.text));
+    if (speakReply) {
+      unawaited(_ttsService.speak(reply.text));
+    }
   }
 
   /// Converts a parsed reminder request into a device action reply string.
