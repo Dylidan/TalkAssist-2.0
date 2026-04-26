@@ -96,8 +96,10 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
   bool _initialized = false;
   bool _disposed = false;
   bool _isObserverRegistered = false;
+  String _activeServiceLabel = 'initializing';
 
   String get activeConversationId => _messageStore.activeConversationId;
+  String get activeServiceLabel => _activeServiceLabel;
 
   /// Conversation list already shaped for the UI, including which tab is active.
   List<ChatConversationSummary> get conversations {
@@ -225,7 +227,11 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
   /// Main entry point for user input.
   /// Saves the user message, shows a pending assistant bubble, then routes the
   /// input through reminder handling or the LLM before storing the final reply.
-  Future<void> sendUserMessage(String rawInput) async {
+  Future<void> sendUserMessage(
+    String rawInput, {
+    bool speakReply = true,
+    bool awaitReplySpeechCompletion = false,
+  }) async {
     final text = rawInput.trim();
     if (text.isEmpty || _disposed) {
       return;
@@ -266,6 +272,7 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
       );
       _orchestrator.setHistorySnapshot(_messageStore.historyForLlm());
       _markHistoryDirty();
+      _activeServiceLabel = 'device';
       _notifyIfAlive();
       unawaited(_flushHistoryIfDirty(reason: "reminder-reply"));
       return;
@@ -326,13 +333,20 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
     );
     _orchestrator.setHistorySnapshot(_messageStore.historyForLlm());
     _markHistoryDirty();
+    _activeServiceLabel = _labelForOrigin(reply.origin);
     _notifyIfAlive();
     unawaited(_flushHistoryIfDirty(reason: "assistant-reply"));
 
-    if (kDebugMode) {
+    if (speakReply && kDebugMode) {
       debugPrint("CHAT: Triggering TTS for reply");
     }
-    unawaited(_ttsService.speak(reply.text));
+    if (speakReply) {
+      if (awaitReplySpeechCompletion) {
+        await _ttsService.speakAndWait(reply.text);
+      } else {
+        unawaited(_ttsService.speak(reply.text));
+      }
+    }
   }
 
   /// Converts a parsed reminder request into a device action reply string.
@@ -494,5 +508,15 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
     unawaited(_orchestrator.dispose());
     unawaited(_ttsService.dispose());
     super.dispose();
+  }
+
+  String _labelForOrigin(AssistantOrigin origin) {
+    switch (origin) {
+      case AssistantOrigin.onlineLlm:    return 'online';
+      case AssistantOrigin.localLlm:     return 'on-device';
+      case AssistantOrigin.safeMode:     return 'safe mode';
+      case AssistantOrigin.deviceAction: return 'device';
+      case AssistantOrigin.queuedReplay: return 'queued';
+    }
   }
 }

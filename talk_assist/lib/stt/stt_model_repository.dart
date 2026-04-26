@@ -45,6 +45,11 @@ class SttModelRepository {
         return File('${dir.path}/${SttConfig.tokensFileName}');
     }
 
+    Future<File> getVadFile() async {
+        final baseDir = await getBaseModelDirectory();
+        return File('${baseDir.path}/${SttConfig.vadFileName}');
+    }
+
     //Quick check for encoder/decoder/tokens file
     Future<bool> isModelReady() async {
         final encoderFile = await getEncoderFile();
@@ -54,16 +59,20 @@ class SttModelRepository {
         final encoderExists = await encoderFile.exists();
         final decoderExists = await decoderFile.exists();
         final tokensExists = await tokensFile.exists();
+        final vadFile = await getVadFile();
+        final vadExists = await vadFile.exists();
 
-        if (!encoderExists || !decoderExists || !tokensExists) {
+        if (!encoderExists || !decoderExists || !tokensExists || !vadExists) {
         return false;
         }
 
         final encoderSize = await encoderFile.length();
         final decoderSize = await decoderFile.length();
+        final vadSize = await vadFile.length();
 
         return encoderSize >= SttConfig.minimumEncoderSizeBytes &&
-            decoderSize >= SttConfig.minimumDecoderSizeBytes;
+            decoderSize >= SttConfig.minimumDecoderSizeBytes &&
+            vadSize >= SttConfig.minimumVadSizeBytes;
     }
 
     //Return the expected full paths for encoder/decoder/tokens
@@ -74,6 +83,7 @@ class SttModelRepository {
         'encoder': '${dir.path}/${SttConfig.encoderFileName}',
         'decoder': '${dir.path}/${SttConfig.decoderFileName}',
         'tokens': '${dir.path}/${SttConfig.tokensFileName}',
+        'vad': '${(await getVadFile()).path}',
         };
     }
 
@@ -85,9 +95,12 @@ class SttModelRepository {
         final encoderExists = await encoderFile.exists();
         final decoderExists = await decoderFile.exists();
         final tokensExists = await tokensFile.exists();
+        final vadFile = await getVadFile();
+        final vadExists = await vadFile.exists();
 
         int encoderSize = 0;
         int decoderSize = 0;
+        int vadSize = 0;
 
         if (encoderExists) {
         encoderSize = await encoderFile.length();
@@ -95,8 +108,11 @@ class SttModelRepository {
         if (decoderExists) {
         decoderSize = await decoderFile.length();
         }
+        if (vadExists) {
+        vadSize = await vadFile.length();
+        }
 
-        return 'encoderExists=$encoderExists, decoderExists=$decoderExists, tokensExists=$tokensExists, encoderSize=$encoderSize, decoderSize=$decoderSize';
+        return 'encoderExists=$encoderExists, decoderExists=$decoderExists, tokensExists=$tokensExists, vadExists=$vadExists, encoderSize=$encoderSize, decoderSize=$decoderSize, vadSize=$vadSize';
     }
 
     //Save the path for SharedPreferences 
@@ -137,6 +153,7 @@ class SttModelRepository {
         final encoderFile = await getEncoderFile();
         final decoderFile = await getDecoderFile();
         final tokensFile = await getTokensFile();
+        final vadFile = await getVadFile();
 
         // clear any saved state 
         await clearSavedModelState();
@@ -156,6 +173,10 @@ class SttModelRepository {
             print('STT download: downloading tokens...');
             await _downloadFile(SttConfig.tokensUrl, tokensFile);
             }
+            if (!await vadFile.exists()) {
+            print('STT download: downloading vad model...');
+            await _downloadFile(SttConfig.vadUrl, vadFile);
+            }
 
             final nowReady = await isModelReady();
             if (!nowReady) {
@@ -174,6 +195,9 @@ class SttModelRepository {
             }
             if (await tokensFile.exists() && await tokensFile.length() == 0) {
             await tokensFile.delete();
+            }
+            if (await vadFile.exists() && await vadFile.length() == 0) {
+            await vadFile.delete();
             }
             rethrow;
         }
