@@ -24,6 +24,10 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>Talk Assist uses the camera to preview live video for real-time assistance features.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Talk Assist may use the microphone when video capture with audio is enabled in a future update.</string>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>

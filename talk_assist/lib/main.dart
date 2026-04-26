@@ -6,8 +6,20 @@ import 'chat_screen.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   sherpa_onnx.initBindings();
-  await dotenv.load(fileName: ".env");
+  await _loadEnvironment();
   runApp(const MainApp());
+}
+
+Future<void> _loadEnvironment() async {
+  try {
+    await dotenv.load(fileName: ".env");
+  } on FileNotFoundError {
+    debugPrint("No .env file found. Continuing with empty environment.");
+    dotenv.testLoad(fileInput: "");
+  } on EmptyEnvFileError {
+    debugPrint("Empty .env file detected. Continuing with empty environment.");
+    dotenv.testLoad(fileInput: "");
+  }
 }
 
 class MainApp extends StatelessWidget {

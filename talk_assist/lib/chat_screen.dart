@@ -5,6 +5,7 @@ import "package:talk_assist/chat/chat_controller.dart";
 import "package:talk_assist/chat/chat_view_models.dart";
 import 'package:talk_assist/stt/sherpa_stt_service.dart';
 import 'package:talk_assist/stt/wake_word_service.dart';
+import 'package:talk_assist/vision/vision_screen.dart';
 import "widgets/chat_ui.dart";
 
 class ChatScreen extends StatefulWidget {
@@ -124,7 +125,8 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _deleteConversation(String conversationId) async {
     final isDeletingActiveConversation = _conversations.any(
-      (conversation) => conversation.id == conversationId && conversation.isActive,
+      (conversation) =>
+          conversation.id == conversationId && conversation.isActive,
     );
     final shouldDelete = await showDialog<bool>(
       context: context,
@@ -205,9 +207,9 @@ class _ChatScreenState extends State<ChatScreen> {
       await _startVoiceMode();
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Record failed: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Record failed: $e')));
     }
   }
 
@@ -245,9 +247,9 @@ class _ChatScreenState extends State<ChatScreen> {
       if (!mounted) {
         return;
       }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Wake word failed: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Wake word failed: $e')));
       await _ensureWakeWordListening();
     }
   }
@@ -274,9 +276,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _runContinuousSpeechMode(int sessionId) async {
-    while (mounted &&
-        _isVoiceModeActive &&
-        sessionId == _recordSessionId) {
+    while (mounted && _isVoiceModeActive && sessionId == _recordSessionId) {
       try {
         if (!mounted || !_isVoiceModeActive || sessionId != _recordSessionId) {
           return;
@@ -351,10 +351,31 @@ class _ChatScreenState extends State<ChatScreen> {
       if (!mounted) {
         return;
       }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Wake word unavailable: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Wake word unavailable: $e')));
     }
+  }
+
+  Future<void> _openCamera() async {
+    if (_isVoiceModeActive) {
+      await _stopVoiceMode();
+    } else {
+      await _wakeWordService.stopListening();
+    }
+
+    if (!mounted) {
+      return;
+    }
+
+    await Navigator.of(
+      context,
+    ).push(MaterialPageRoute<void>(builder: (_) => const VisionScreen()));
+
+    if (!mounted) {
+      return;
+    }
+    await _ensureWakeWordListening();
   }
 
   @override
@@ -383,6 +404,7 @@ class _ChatScreenState extends State<ChatScreen> {
       onSelectConversation: _selectConversation,
       onDeleteConversation: _deleteConversation,
       onMicTap: _toggleMic,
+      onOpenCamera: _openCamera,
       isVoiceModeActive: _isVoiceModeActive,
       isListening: _isListening,
       isTranscribing: _isTranscribing,

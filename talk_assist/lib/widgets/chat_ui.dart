@@ -20,6 +20,7 @@ class ChatUI extends StatelessWidget {
     required this.onSelectConversation,
     required this.onDeleteConversation,
     required this.onMicTap,
+    required this.onOpenCamera,
     required this.isVoiceModeActive,
     required this.isListening,
     required this.isTranscribing,
@@ -36,6 +37,7 @@ class ChatUI extends StatelessWidget {
   final ValueChanged<String> onSelectConversation;
   final ValueChanged<String> onDeleteConversation;
   final VoidCallback onMicTap;
+  final VoidCallback onOpenCamera;
   final bool isVoiceModeActive;
   final bool isListening;
   final bool isTranscribing;
@@ -77,7 +79,8 @@ class ChatUI extends StatelessWidget {
                           builder: (context) {
                             return IconButton(
                               icon: const Icon(Icons.menu_rounded),
-                              onPressed: () => Scaffold.of(context).openDrawer(),
+                              onPressed: () =>
+                                  Scaffold.of(context).openDrawer(),
                             );
                           },
                         ),
@@ -91,6 +94,11 @@ class ChatUI extends StatelessWidget {
                   ),
                   centerTitle: false,
                   actions: [
+                    IconButton(
+                      tooltip: "Open camera",
+                      onPressed: onOpenCamera,
+                      icon: const Icon(Icons.videocam_outlined),
+                    ),
                     Padding(
                       padding: const EdgeInsets.only(right: 16),
                       child: _LlmStatusIndicator(status: llmStatus),
@@ -114,7 +122,12 @@ class ChatUI extends StatelessWidget {
                           Expanded(
                             child: ListView.builder(
                               controller: scrollController,
-                              padding: const EdgeInsets.fromLTRB(14, 12, 14, 10),
+                              padding: const EdgeInsets.fromLTRB(
+                                14,
+                                12,
+                                14,
+                                10,
+                              ),
                               itemCount: messages.length,
                               itemBuilder: (context, index) {
                                 return MessageBubble(message: messages[index]);
@@ -126,7 +139,10 @@ class ChatUI extends StatelessWidget {
                             child: ClipRRect(
                               borderRadius: BorderRadius.circular(22),
                               child: BackdropFilter(
-                                filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+                                filter: ImageFilter.blur(
+                                  sigmaX: 18,
+                                  sigmaY: 18,
+                                ),
                                 child: Container(
                                   padding: const EdgeInsets.symmetric(
                                     horizontal: 12,
@@ -154,7 +170,9 @@ class ChatUI extends StatelessWidget {
                                             hintText:
                                                 "Message or /reminder Task | 2026-03-15 18:30",
                                             hintStyle: TextStyle(
-                                              color: Colors.white.withOpacity(0.55),
+                                              color: Colors.white.withOpacity(
+                                                0.55,
+                                              ),
                                             ),
                                             border: InputBorder.none,
                                             isDense: true,
@@ -168,16 +186,19 @@ class ChatUI extends StatelessWidget {
                                       ),
                                       const SizedBox(width: 8),
                                       IconButton(
-                                        onPressed: isTranscribing && !isVoiceModeActive
+                                        onPressed:
+                                            isTranscribing && !isVoiceModeActive
                                             ? null
                                             : onMicTap,
-                                        icon: isTranscribing && !isVoiceModeActive
+                                        icon:
+                                            isTranscribing && !isVoiceModeActive
                                             ? const SizedBox(
                                                 width: 20,
                                                 height: 20,
-                                                child: CircularProgressIndicator(
-                                                  strokeWidth: 2,
-                                                ),
+                                                child:
+                                                    CircularProgressIndicator(
+                                                      strokeWidth: 2,
+                                                    ),
                                               )
                                             : Icon(
                                                 isVoiceModeActive
@@ -187,8 +208,9 @@ class ChatUI extends StatelessWidget {
                                       ),
                                       SendButton(
                                         onPressed: onSend,
-                                        enabled:
-                                            textController.text.trim().isNotEmpty,
+                                        enabled: textController.text
+                                            .trim()
+                                            .isNotEmpty,
                                       ),
                                     ],
                                   ),
@@ -282,14 +304,16 @@ class _ConversationPanel extends StatelessWidget {
                           )
                         : ListView.separated(
                             itemCount: conversations.length,
-                            separatorBuilder: (_, _) => const SizedBox(height: 8),
+                            separatorBuilder: (_, _) =>
+                                const SizedBox(height: 8),
                             itemBuilder: (context, index) {
                               final conversation = conversations[index];
                               return _ConversationTile(
                                 conversation: conversation,
                                 onTap: () {
                                   onSelectConversation(conversation.id);
-                                  if (Scaffold.maybeOf(context)?.isDrawerOpen ?? false) {
+                                  if (Scaffold.maybeOf(context)?.isDrawerOpen ??
+                                      false) {
                                     Navigator.of(context).pop();
                                   }
                                 },
