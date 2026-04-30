@@ -52,11 +52,35 @@ _SpeechGenerationResponse _generateSpeechInIsolate(
   try {
     sherpa_onnx.initBindings();
 
-    final vits = sherpa_onnx.OfflineTtsVitsModelConfig(
-      model: request.modelPath,
-      tokens: request.tokensPath,
-      dataDir: request.espeakDataDir,
-    );
+    final modelDir = File(request.modelPath).parent.path;
+    final lexiconPath = "$modelDir/lexicon.txt";
+
+    final hasEspeak = Directory(request.espeakDataDir).existsSync();
+    final hasLexicon = File(lexiconPath).existsSync();
+
+    late final sherpa_onnx.OfflineTtsVitsModelConfig vits;
+
+    if (hasEspeak) {
+      // English / models that include espeak data
+      vits = sherpa_onnx.OfflineTtsVitsModelConfig(
+        model: request.modelPath,
+        tokens: request.tokensPath,
+        dataDir: request.espeakDataDir,
+      );
+    } else if (hasLexicon) {
+      // Chinese / models that provide a lexicon.txt
+      vits = sherpa_onnx.OfflineTtsVitsModelConfig(
+        model: request.modelPath,
+        tokens: request.tokensPath,
+        lexicon: lexiconPath,
+      );
+    } else {
+      // Fallback minimal config
+      vits = sherpa_onnx.OfflineTtsVitsModelConfig(
+        model: request.modelPath,
+        tokens: request.tokensPath,
+      );
+    }
 
     final modelConfig = sherpa_onnx.OfflineTtsModelConfig(
       vits: vits,
@@ -264,12 +288,30 @@ class PiperTtsService implements TtsService {
       }
     }
 
-    if (_modelRecord == null) {
+    //
+    // if (_modelRecord == null) {
+    //   if (kDebugMode) {
+    //     debugPrint("TTS SPEAK: SKIPPED - no model record available");
+    //   }
+    //   return;
+    // }
+    //Again, english only before, it will skip if theres not model record
+    //now it choose depends on text and ask for model
+    
+    final selectedVoice = TtsConfig.voiceForText(text);
+
+    final selectedModelRecord = await _modelRepository.ensureModelAvailable(
+      voice: selectedVoice,
+    );
+
+    if (selectedModelRecord == null) {
       if (kDebugMode) {
         debugPrint("TTS SPEAK: SKIPPED - no model record available");
       }
       return;
     }
+
+    _modelRecord = selectedModelRecord;
 
     // Stop any current speech.
     if (_isSpeaking) {
@@ -297,11 +339,26 @@ class PiperTtsService implements TtsService {
         debugPrint("TTS SPEAK: Output path: $outputPath");
       }
 
+      // final request = _SpeechGenerationRequest(
+      //   text: text,
+      //   modelPath: _modelRecord!.modelPath,
+      //   tokensPath: _modelRecord!.tokensPath,
+      //   espeakDataDir: _modelRecord!.espeakDataDir,
+      //   outputPath: outputPath,
+      //   speed: TtsConfig.speechSpeed,
+      //   speakerId: TtsConfig.speakerId,
+      //   numThreads: TtsConfig.synthesisThreads,
+      // );
+      //So it uses voiceForText → ensureModelAvailable to select and prepare the correct voice model
+      //then packages the model paths and text into a SpeechGenerationRequest
+      //which is sent to the TTS engine to generate audio
+
+
       final request = _SpeechGenerationRequest(
         text: text,
-        modelPath: _modelRecord!.modelPath,
-        tokensPath: _modelRecord!.tokensPath,
-        espeakDataDir: _modelRecord!.espeakDataDir,
+        modelPath: selectedModelRecord.modelPath,
+        tokensPath: selectedModelRecord.tokensPath,
+        espeakDataDir: selectedModelRecord.espeakDataDir,
         outputPath: outputPath,
         speed: TtsConfig.speechSpeed,
         speakerId: TtsConfig.speakerId,

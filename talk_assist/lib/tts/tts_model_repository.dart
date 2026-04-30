@@ -90,26 +90,33 @@ class TtsModelRepository {
   // 2. Discovers any model files in the TTS models directory.
   // 3. Downloads from sherpa-onnx releases if nothing found locally.
   Future<TtsModelRecord?> ensureModelAvailable({
+    TtsVoiceConfig? voice,
     TtsModelDownloadProgress? onProgress,
   }) async {
     if (kDebugMode) {
       debugPrint("TTS MODEL: Checking for voice model...");
     }
+    // final configured = await getConfiguredModel();
+    // if (configured != null && await _isValidModel(configured)) {
+    //   if (kDebugMode) {
+    //     final filename = configured.modelPath.split("/").last;
+    //     debugPrint("TTS MODEL: Cache hit - $filename");
+    //   }
+    //   return configured;
+    // }
 
-    final configured = await getConfiguredModel();
-    if (configured != null && await _isValidModel(configured)) {
-      if (kDebugMode) {
-        final filename = configured.modelPath.split("/").last;
-        debugPrint("TTS MODEL: Cache hit - $filename");
-      }
-      return configured;
-    }
+    //Previously, the system would first look for a default model 
+    //and then use the voice input to find the model for the corresponding language
+
+    //I have to say that during testing, 
+    //there were instances where hola was mistakenly identified as englsih
+    final selectedVoice = voice ?? TtsConfig.defaultVoice;
 
     if (kDebugMode) {
-      debugPrint("TTS MODEL: No cached model found, checking local files...");
+      debugPrint("TTS MODEL: Checking local files for voice model...");
     }
 
-    final discovered = await _discoverLocalModel();
+    final discovered = await _discoverLocalModel(selectedVoice);
     if (discovered != null) {
       await _persist(
         modelPath: discovered.modelPath,
@@ -125,7 +132,7 @@ class TtsModelRepository {
       return discovered;
     }
 
-    final downloadUri = Uri.parse(TtsConfig.modelDownloadUrl);
+    final downloadUri = Uri.parse(selectedVoice.downloadUrl);
     if (kDebugMode) {
       debugPrint("TTS MODEL: Downloading voice model from:");
       debugPrint("  $downloadUri");
@@ -170,7 +177,7 @@ class TtsModelRepository {
       };
     }
 
-    return _downloadModel(downloadUri, onProgress: wrappedProgress);
+    return _downloadModel(downloadUri, selectedVoice: selectedVoice, onProgress: wrappedProgress);
   }
 
   Future<void> clearConfiguredModel() async {
@@ -190,26 +197,57 @@ class TtsModelRepository {
     await prefs.remove(_downloadedAtKey);
   }
 
-  Future<TtsModelRecord?> _discoverLocalModel() async {
+  //Now this function searches for the TTS model for the specified voice
+  //checks whether the tokens and espeak/lexicon are complete
+  //Under normal circumstances, it should be called by nsureModelAvailable along with voiceForText
+  Future<TtsModelRecord?> _discoverLocalModel(TtsVoiceConfig selectedVoice) async {
     final modelDir = await _modelDirectory();
     if (!await modelDir.exists()) {
       return null;
     }
 
-    final voiceDir = Directory("${modelDir.path}/${TtsConfig.voiceModelName}");
+    // :
+    // Future<TtsModelRecord?> _discoverLocalModel() async {
+    //   final modelDir = await _modelDirectory();
+    //   if (!await modelDir.exists()) return null;
+    //   final voiceDir = Directory("${modelDir.path}/${TtsConfig.voiceModelName}");
+    //
+    //   final modelFile = File("${voiceDir.path}/${TtsConfig.onnxModelFileName}");
+    //   final tokensFile = File("${voiceDir.path}/${TtsConfig.tokensFileName}");
+    //   final espeakDir = Directory("${voiceDir.path}/${TtsConfig.espeakDataDirName}");
+    //
+    //   if (!await modelFile.exists() || !await tokensFile.exists() || !await espeakDir.exists()) {
+    //     return null;
+    //   }
+    //
+    //   return TtsModelRecord(
+    //     modelPath: modelFile.path,
+    //     tokensPath: tokensFile.path,
+    //     espeakDataDir: espeakDir.path,
+    //     sourceUrl: null,
+    //     downloadedAtEpochMs: (await voiceDir.stat()).modified.millisecondsSinceEpoch,
+    //   );
+    // }
+
+    final voiceDir = Directory("${modelDir.path}/${selectedVoice.modelName}");
     if (!await voiceDir.exists()) {
       return null;
     }
 
-    final modelFile = File("${voiceDir.path}/${TtsConfig.onnxModelFileName}");
+    final modelFile = File("${voiceDir.path}/${selectedVoice.onnxModelFileName}");
+    // final tokensFile = File("${voiceDir.path}/${TtsConfig.tokensFileName}");
+    // final espeakDir = Directory("${voiceDir.path}/${TtsConfig.espeakDataDirName}");
     final tokensFile = File("${voiceDir.path}/${TtsConfig.tokensFileName}");
     final espeakDir = Directory(
       "${voiceDir.path}/${TtsConfig.espeakDataDirName}",
     );
 
-    if (!await modelFile.exists() ||
-        !await tokensFile.exists() ||
-        !await espeakDir.exists()) {
+    final lexiconFile = File("${voiceDir.path}/lexicon.txt");
+    if (modelFile.existsSync() &&
+        tokensFile.existsSync() &&
+        (espeakDir.existsSync() || lexiconFile.existsSync())) {
+      // ok
+    } else {
       return null;
     }
 
@@ -225,12 +263,13 @@ class TtsModelRepository {
 
   Future<TtsModelRecord> _downloadModel(
     Uri downloadUri, {
+    required TtsVoiceConfig selectedVoice,
     TtsModelDownloadProgress? onProgress,
   }) async {
     final modelDir = await _modelDirectory();
     final archiveFile = File("${modelDir.path}/voice.tar.bz2");
     final extractDir = Directory(
-      "${modelDir.path}/${TtsConfig.voiceModelName}",
+      "${modelDir.path}/${selectedVoice.modelName}",
     );
 
     final client = HttpClient();
@@ -286,25 +325,44 @@ class TtsModelRepository {
         debugPrint("TTS MODEL: Extraction complete");
       }
 
+      // final modelFile = File("${extractDir.path}/${TtsConfig.onnxModelFileName}");
+      // final tokensFile = File("${extractDir.path}/${TtsConfig.tokensFileName}");
+      // final espeakDir = Directory("${extractDir.path}/${TtsConfig.espeakDataDirName}");
+
       // Find the extracted files.
       final modelFile = File(
-        "${extractDir.path}/${TtsConfig.onnxModelFileName}",
+        "${extractDir.path}/${selectedVoice.onnxModelFileName}",
       );
       final tokensFile = File("${extractDir.path}/${TtsConfig.tokensFileName}");
       final espeakDir = Directory(
         "${extractDir.path}/${TtsConfig.espeakDataDirName}",
       );
 
-      if (!await modelFile.exists() ||
-          !await tokensFile.exists() ||
-          !await espeakDir.exists()) {
+      final lexiconFile = File("${extractDir.path}/lexicon.txt");
+      if (modelFile.existsSync() &&
+          tokensFile.existsSync() &&
+          (espeakDir.existsSync() || lexiconFile.existsSync())) {
+        // all required files present, continue
+      } else {
+        if (kDebugMode) {
+          debugPrint("TTS MODEL: Extracted files:");
+          await for (final entity in extractDir.list(recursive: true)) {
+            debugPrint("  ${entity.path}");
+          }
+        }
+
         throw const FormatException(
           "TTS model archive missing required files.",
         );
       }
 
       // Validate the model size.
-      await _validateModelSize(modelFile, tokensFile, espeakDir);
+      await _validateModelSize(
+        modelFile,
+        tokensFile,
+        espeakDir,
+        minModelSizeBytes: selectedVoice.minimumModelSizeBytes,
+      );
 
       // Cleanup archive.
       await archiveFile.delete();
@@ -425,21 +483,30 @@ class TtsModelRepository {
   Future<void> _validateModelSize(
     File modelFile,
     File tokensFile,
-    Directory espeakDir,
-  ) async {
+    Directory espeakDir, {
+    int? minModelSizeBytes,
+  }) async {
     var totalSize = 0;
     totalSize += await modelFile.length();
     totalSize += await tokensFile.length();
 
-    await for (final entry in espeakDir.list(recursive: true)) {
-      if (entry is File) {
-        totalSize += await entry.length();
+    if (await espeakDir.exists()) {
+      await for (final entry in espeakDir.list(recursive: true)) {
+        if (entry is File) {
+          totalSize += await entry.length();
+        }
       }
     }
 
-    if (totalSize < TtsConfig.minimumModelSizeBytes) {
+    // if (totalSize < TtsConfig.minimumModelSizeBytes) {
+    //   throw FormatException(
+    //     "Invalid TTS model: expected at least ${TtsConfig.minimumModelSizeBytes} bytes, got $totalSize.",
+    //   );
+    // }
+    final minBytes = minModelSizeBytes ?? TtsConfig.minimumModelSizeBytes;
+    if (totalSize < minBytes) {
       throw FormatException(
-        "Invalid TTS model: expected at least ${TtsConfig.minimumModelSizeBytes} bytes, got $totalSize.",
+        "Invalid TTS model: expected at least ${minBytes} bytes, got $totalSize.",
       );
     }
   }

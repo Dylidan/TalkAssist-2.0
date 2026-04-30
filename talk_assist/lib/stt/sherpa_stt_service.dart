@@ -338,7 +338,7 @@ class SherpaSttService implements SttService {
         whisper: sherpa_onnx.OfflineWhisperModelConfig(
           encoder: encoder,
           decoder: decoder,
-          language: 'en',
+          language: '',
           task: 'transcribe',
         ),
         tokens: tokens,
