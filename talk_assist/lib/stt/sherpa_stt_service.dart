@@ -3,6 +3,7 @@
 // reliably than amplitude-only silence detection.
 
 import 'dart:async';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:record/record.dart';
@@ -13,6 +14,8 @@ import 'stt_service.dart';
 
 class SherpaSttService implements SttService {
   static const int _sampleRate = 16000;
+  static const double _vadThreshold = 0.5;
+  static const double _minSpeechDurationSeconds = 0.2;
 
   final AudioRecorder _recorder = AudioRecorder();
   final SttModelRepository _modelRepository = SttModelRepository();
@@ -118,12 +121,7 @@ class SherpaSttService implements SttService {
         !_activeRecordingCompleter!.isCompleted) {
       final completer = _activeRecordingCompleter!;
       print('STT stop: manual stop requested');
-      unawaited(
-        _finishActiveRecording(
-          reason: 'manual-stop',
-          flushVad: true,
-        ),
-      );
+      unawaited(_finishActiveRecording(reason: 'manual-stop', flushVad: true));
       return completer.future;
     }
 
@@ -143,15 +141,15 @@ class SherpaSttService implements SttService {
     final vadConfig = sherpa_onnx.VadModelConfig(
       sileroVad: sherpa_onnx.SileroVadModelConfig(
         model: vadPath,
-        threshold: 0.5,
+        threshold: _vadThreshold,
         minSilenceDuration: silenceDuration.inMilliseconds / 1000.0,
-        minSpeechDuration: 0.2,
+        minSpeechDuration: _minSpeechDurationSeconds,
         maxSpeechDuration: maxDuration.inMilliseconds / 1000.0,
       ),
       sampleRate: _sampleRate,
       numThreads: 1,
       provider: 'cpu',
-      debug: true,
+      debug: false,
     );
 
     final bufferSizeInSeconds = maxDuration.inMilliseconds / 1000.0 + 1.0;
@@ -177,12 +175,7 @@ class SherpaSttService implements SttService {
     _activeMaxTimer?.cancel();
     _activeMaxTimer = Timer(maxDuration, () {
       print('STT stop: max duration reached');
-      unawaited(
-        _finishActiveRecording(
-          reason: 'max-duration',
-          flushVad: true,
-        ),
-      );
+      unawaited(_finishActiveRecording(reason: 'max-duration', flushVad: true));
     });
 
     _activeAudioStreamSubscription = audioStream.listen(
@@ -311,7 +304,10 @@ class SherpaSttService implements SttService {
     return samples;
   }
 
-  Future<String?> _transcribeSamples(Float32List samples, int sampleRate) async {
+  Future<String?> _transcribeSamples(
+    Float32List samples,
+    int sampleRate,
+  ) async {
     if (_modelDirPath == null) {
       throw Exception('STT model directory is not initialized');
     }
@@ -324,14 +320,21 @@ class SherpaSttService implements SttService {
     print(
       'STT transcribe: samples=${samples.length}, sampleRate=$sampleRate, mode=vad',
     );
-    print('STT transcribe: encoder=$encoder');
-    print('STT transcribe: decoder=$decoder');
-    print('STT transcribe: tokens=$tokens');
 
     if (sampleRate <= 0 || samples.isEmpty) {
-      print('STT transcribe: no samples available from detected speech segment');
+      print(
+        'STT transcribe: no samples available from detected speech segment',
+      );
       return null;
     }
+
+    final durationSeconds = samples.length / sampleRate;
+    final rmsEnergy = _rmsEnergy(samples);
+    final peakEnergy = _peakEnergy(samples);
+    print(
+      'STT transcribe: duration=${durationSeconds.toStringAsFixed(2)}s, '
+      'rms=${rmsEnergy.toStringAsFixed(4)}, peak=${peakEnergy.toStringAsFixed(4)}',
+    );
 
     final config = sherpa_onnx.OfflineRecognizerConfig(
       model: sherpa_onnx.OfflineModelConfig(
@@ -342,7 +345,7 @@ class SherpaSttService implements SttService {
           task: 'transcribe',
         ),
         tokens: tokens,
-        debug: true,
+        debug: false,
         modelType: 'whisper',
         numThreads: 2,
       ),
@@ -351,10 +354,7 @@ class SherpaSttService implements SttService {
     final recognizer = sherpa_onnx.OfflineRecognizer(config);
     final stream = recognizer.createStream();
 
-    stream.acceptWaveform(
-      samples: samples,
-      sampleRate: sampleRate,
-    );
+    stream.acceptWaveform(samples: samples, sampleRate: sampleRate);
     recognizer.decode(stream);
 
     final result = recognizer.getResult(stream);
@@ -367,16 +367,36 @@ class SherpaSttService implements SttService {
     return text.isEmpty ? null : text;
   }
 
+  double _rmsEnergy(Float32List samples) {
+    if (samples.isEmpty) {
+      return 0;
+    }
+
+    var sumSquares = 0.0;
+    for (final sample in samples) {
+      sumSquares += sample * sample;
+    }
+    return math.sqrt(sumSquares / samples.length);
+  }
+
+  double _peakEnergy(Float32List samples) {
+    var peak = 0.0;
+    for (final sample in samples) {
+      final absolute = sample.abs();
+      if (absolute > peak) {
+        peak = absolute;
+      }
+    }
+    return peak;
+  }
+
   void _freeActiveVad() {
     final vad = _activeVad;
     _activeVad = null;
     vad?.free();
   }
 
-  Future<void> _failActiveRecording(
-    Object error,
-    StackTrace stackTrace,
-  ) async {
+  Future<void> _failActiveRecording(Object error, StackTrace stackTrace) async {
     final completer = _activeRecordingCompleter;
     _activeRecordingCompleter = null;
 

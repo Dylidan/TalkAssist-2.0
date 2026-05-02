@@ -26,13 +26,26 @@ class SerperSearchService {
   SerperSearchService({
     String? apiKey,
     http.Client? httpClient,
-  })  : _apiKey = apiKey ?? dotenv.env['SERPER_KEY'] ?? '',
+  })  : _apiKey = _resolveApiKey(apiKey),
         _client = httpClient ?? http.Client();
 
   final String _apiKey;
   final http.Client _client;
 
   static const Duration _requestTimeout = Duration(seconds: 10);
+
+  static String _resolveApiKey(String? override) {
+    const dartDefineKey = String.fromEnvironment('SERPER_KEY');
+    for (final candidate in <String?>[
+      override,
+      dotenv.env['SERPER_KEY'],
+      dartDefineKey,
+    ]) {
+      final value = candidate?.trim() ?? '';
+      if (value.isNotEmpty) return value;
+    }
+    return '';
+  }
 
   /// Fetches up to [SearchConfig.maxResults] results for [query].
   Future<List<SerperSearchResult>> search(String query) async {
