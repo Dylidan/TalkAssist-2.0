@@ -297,7 +297,7 @@ class PiperTtsService implements TtsService {
     // }
     //Again, english only before, it will skip if theres not model record
     //now it choose depends on text and ask for model
-    
+
     final selectedVoice = TtsConfig.voiceForText(text);
 
     final selectedModelRecord = await _modelRepository.ensureModelAvailable(
@@ -353,7 +353,6 @@ class PiperTtsService implements TtsService {
       //then packages the model paths and text into a SpeechGenerationRequest
       //which is sent to the TTS engine to generate audio
 
-
       final request = _SpeechGenerationRequest(
         text: text,
         modelPath: selectedModelRecord.modelPath,
@@ -390,7 +389,9 @@ class PiperTtsService implements TtsService {
           playbackCompleter.complete();
         }
       });
-      final stateSubscription = _audioPlayer.onPlayerStateChanged.listen((state) {
+      final stateSubscription = _audioPlayer.onPlayerStateChanged.listen((
+        state,
+      ) {
         if ((state == PlayerState.stopped || state == PlayerState.completed) &&
             !playbackCompleter.isCompleted) {
           playbackCompleter.complete();
@@ -416,15 +417,9 @@ class PiperTtsService implements TtsService {
           );
         }
       } finally {
-        if (awaitPlaybackCompletion) {
-          await completeSubscription.cancel();
-          await stateSubscription.cancel();
-          await _cleanupTempFile(outputPath);
-        } else {
-          unawaited(completeSubscription.cancel());
-          unawaited(stateSubscription.cancel());
-          unawaited(_cleanupTempFile(outputPath));
-        }
+        await completeSubscription.cancel();
+        await stateSubscription.cancel();
+        unawaited(_cleanupTempFile(outputPath));
       }
     } catch (e) {
       if (kDebugMode) {
