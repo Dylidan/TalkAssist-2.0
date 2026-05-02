@@ -29,6 +29,12 @@ class _ChatScreenState extends State<ChatScreen> {
   late final SherpaSttService _sttService;
   late final WakeWordService _wakeWordService;
   StreamSubscription<String>? _wakeWordSubscription;
+  static const Set<String> _sleepPhrases = {
+    "bye talk assist",
+    "goodbye talk assist",
+    "stop talk assist",
+    "sleep talk assist",
+  };
 
   @override
   void initState() {
@@ -124,7 +130,8 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _deleteConversation(String conversationId) async {
     final isDeletingActiveConversation = _conversations.any(
-      (conversation) => conversation.id == conversationId && conversation.isActive,
+      (conversation) =>
+          conversation.id == conversationId && conversation.isActive,
     );
     final shouldDelete = await showDialog<bool>(
       context: context,
@@ -205,9 +212,9 @@ class _ChatScreenState extends State<ChatScreen> {
       await _startVoiceMode();
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Record failed: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Record failed: $e')));
     }
   }
 
@@ -245,9 +252,9 @@ class _ChatScreenState extends State<ChatScreen> {
       if (!mounted) {
         return;
       }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Wake word failed: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Wake word failed: $e')));
       await _ensureWakeWordListening();
     }
   }
@@ -274,9 +281,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _runContinuousSpeechMode(int sessionId) async {
-    while (mounted &&
-        _isVoiceModeActive &&
-        sessionId == _recordSessionId) {
+    while (mounted && _isVoiceModeActive && sessionId == _recordSessionId) {
       try {
         if (!mounted || !_isVoiceModeActive || sessionId != _recordSessionId) {
           return;
@@ -299,6 +304,12 @@ class _ChatScreenState extends State<ChatScreen> {
         });
 
         if (text != null && text.isNotEmpty) {
+          if (_isSleepPhrase(text)) {
+            debugPrint("VOICE MODE: sleep phrase detected");
+            await _sleepVoiceMode(sessionId);
+            return;
+          }
+
           await _submitSpeechTranscript(
             text,
             speakReply: true,
@@ -337,6 +348,38 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  Future<void> _sleepVoiceMode(int sessionId) async {
+    if (!mounted || sessionId != _recordSessionId) {
+      return;
+    }
+
+    _recordSessionId += 1;
+    setState(() {
+      _isVoiceModeActive = false;
+      _isListening = false;
+      _isTranscribing = false;
+    });
+
+    await _sttService.cancel();
+    await _ensureWakeWordListening();
+  }
+
+  bool _isSleepPhrase(String text) {
+    final normalized = text
+        .toLowerCase()
+        .replaceAll(RegExp(r"[^a-z0-9\s]+"), " ")
+        .replaceAll(RegExp(r"\s+"), " ")
+        .trim();
+
+    if (normalized.isEmpty) {
+      return false;
+    }
+
+    return _sleepPhrases.any(
+      (phrase) => normalized == phrase || normalized.endsWith(" $phrase"),
+    );
+  }
+
   Future<void> _ensureWakeWordListening() async {
     if (!_isWakeWordReady || _isVoiceModeActive || _isListening) {
       return;
@@ -351,9 +394,9 @@ class _ChatScreenState extends State<ChatScreen> {
       if (!mounted) {
         return;
       }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Wake word unavailable: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Wake word unavailable: $e')));
     }
   }
 
