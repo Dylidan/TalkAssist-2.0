@@ -3,7 +3,7 @@
 //Then downloads missing files from the internet
 
 import 'dart:io';
-import 'package:http/http.dart' as http;
+
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -209,23 +209,49 @@ class SttModelRepository {
         await prefs.remove(SttConfig.prefsModelReadyKey);
     }
 
-    //Download helper with a timeout and basic error checks.
+    //Download helper — streams to disk instead of buffering in memory.
     Future<void> _downloadFile(String url, File outputFile) async {
         print('STT download: sending GET request for $url');
 
-        final response = await http.get(Uri.parse(url)).timeout(
-            const Duration(minutes: 3),
-            onTimeout: () => throw Exception('STT file download timed out: $url'),
-        );
+        final client = HttpClient();
+        try {
+            final request = await client.getUrl(Uri.parse(url));
+            final response = await request.close();
 
-        print('STT download: response status = ${response.statusCode}');
-        if (response.statusCode != 200) {
-            throw Exception('Failed to download STT file: ${response.statusCode} $url');
+            print('STT download: response status = ${response.statusCode}');
+            if (response.statusCode < 200 || response.statusCode >= 300) {
+                throw Exception('Failed to download STT file: ${response.statusCode} $url');
+            }
+
+            final sink = outputFile.openWrite();
+            final totalBytes = response.contentLength > 0
+                ? response.contentLength
+                : -1;
+            var receivedBytes = 0;
+
+            await for (final chunk in response) {
+                sink.add(chunk);
+                receivedBytes += chunk.length;
+
+                // Log progress every ~10%
+                if (totalBytes > 0) {
+                    final percent = (receivedBytes * 100 ~/ totalBytes);
+                    if (percent % 10 == 0) {
+                        final receivedMB = (receivedBytes / 1024 / 1024).toStringAsFixed(1);
+                        final totalMB = (totalBytes / 1024 / 1024).toStringAsFixed(1);
+                        print('STT download: $percent% ($receivedMB / $totalMB MB)');
+                    }
+                }
+            }
+
+            await sink.flush();
+            await sink.close();
+
+            print('STT download: received $receivedBytes bytes');
+            print('STT download: saved ${outputFile.path}');
+        } finally {
+            client.close(force: true);
         }
-
-        print('STT download: received ${response.bodyBytes.length} bytes');
-        await outputFile.writeAsBytes(response.bodyBytes, flush: true);
-        print('STT download: saved ${outputFile.path}');
     }
 
 }

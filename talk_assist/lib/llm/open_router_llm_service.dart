@@ -34,7 +34,7 @@ class OpenRouterLlmService implements LlmService {
   // I tried using a couple including meta-llama/llama-3.1-8b-instruct:free
   // but they seem to fail occasionally so I'm going to leave it as auto
   // models are constantly being removed from the free tier
-  static const String _model = 'openrouter/auto';
+  static const String _model = 'openai/gpt-oss-120b:free';
 
   static const Duration _requestTimeout = Duration(seconds: 30);
   static const Duration _readinessTimeout = Duration(seconds: 5);

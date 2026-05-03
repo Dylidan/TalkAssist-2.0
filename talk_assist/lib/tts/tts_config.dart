@@ -39,11 +39,11 @@ class TtsConfig {
   static const Map<String, TtsVoiceConfig> voices = {
     "en": TtsVoiceConfig(
       displayName: "Amy",
-      modelName: "en_US-amy-low",
+      modelName: "en_US-amy-medium",
       locale: "en_US",
       downloadUrl:
-          "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_US-amy-low.tar.bz2",
-      onnxModelFileName: "en_US-amy-low.onnx",
+          "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_US-amy-medium.tar.bz2",
+      onnxModelFileName: "en_US-amy-medium.onnx",
       minimumModelSizeBytes: 61 * 1024 * 1024,
     ),
 
