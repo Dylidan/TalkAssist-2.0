@@ -216,18 +216,20 @@ class LlmOrchestrator {
           userInput: normalizedWithSearch,
           history: _historyForLlm(_latestHistory),
         );
+        final cleanedOnlineReply = _cleanReplyText(onlineReply);
+        
         _latestHistory = <ChatMessage>[
           ..._latestHistory,
           ChatMessage(
             role: MsgRole.assistant,
-            text: onlineReply,
+            text: cleanedOnlineReply,
             timestamp: DateTime.now(),
             assistantOrigin: AssistantOrigin.onlineLlm,
           ),
         ];
         if (kDebugMode) debugPrint('OpenRouter reply succeeded.');
         return LlmOrchestratorReply(
-          text: onlineReply,
+          text: cleanedOnlineReply,
           origin: AssistantOrigin.onlineLlm,
           usedOnlineSearch: usedOnlineSearch,
         );
@@ -248,17 +250,19 @@ class LlmOrchestrator {
             userInput: normalized,
             history: _historyForLlm(_latestHistory),
           );
+          final cleanedLocalReply = _cleanReplyText(localReply);
+          
           _latestHistory = <ChatMessage>[
             ..._latestHistory,
             ChatMessage(
               role: MsgRole.assistant,
-              text: localReply,
+              text: cleanedLocalReply,
               timestamp: DateTime.now(),
               assistantOrigin: AssistantOrigin.localLlm,
             ),
           ];
           return LlmOrchestratorReply(
-            text: localReply,
+            text: cleanedLocalReply,
             origin: AssistantOrigin.localLlm,
           );
         } catch (e) {
@@ -442,5 +446,16 @@ class LlmOrchestrator {
     await _onlineLlm.dispose();
     await _localLlm.dispose();
     await _safeModeLlm.dispose();
+  }
+
+  /// Cleans markdown formatting and citation links from the reply
+  /// so it reads naturally for visually impaired users.
+  String _cleanReplyText(String text) {
+    var cleaned = text;
+    // Remove markdown bold and italic asterisks
+    cleaned = cleaned.replaceAll('**', '').replaceAll('*', '');
+    // Remove citation tags like [1], [2][3], etc.
+    cleaned = cleaned.replaceAll(RegExp(r'\[\d+\]'), '');
+    return cleaned.trim();
   }
 }

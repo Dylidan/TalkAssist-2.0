@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:talk_assist/llm/llm_service.dart';
 import 'package:talk_assist/llm/model_config.dart';
+import 'package:talk_assist/llm/system_prompt_builder.dart';
 import 'package:talk_assist/message.dart';
 
 /// Online LLM service that streams responses from OpenRouter.ai.
@@ -157,7 +158,8 @@ class OpenRouterLlmService implements LlmService {
       );
     }
 
-    final messages = _buildMessages(history: history, userInput: userInput);
+    final systemPrompt = await SystemPromptBuilder.buildDynamicSystemPrompt();
+    final messages = _buildMessages(history: history, userInput: userInput, systemPrompt: systemPrompt);
 
     http.Response response;
     try {
@@ -238,9 +240,10 @@ class OpenRouterLlmService implements LlmService {
   List<Map<String, String>> _buildMessages({
     required List<ChatMessage> history,
     required String userInput,
+    required String systemPrompt,
   }) {
     final messages = <Map<String, String>>[
-      {'role': 'system', 'content': ModelConfig.systemPrompt},
+      {'role': 'system', 'content': systemPrompt},
     ];
 
     // Include conversation history, excluding safe-mode replies

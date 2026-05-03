@@ -240,6 +240,21 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
 
+    // Ignore STT background noise like [static], (sigh), etc.
+    if (RegExp(r'^(\[.*\]|\(.*\))$').hasMatch(text)) {
+      if (kDebugMode) {
+        debugPrint("CHAT: STT noise detected, ignoring user message: $text");
+      }
+      if (speakReply) {
+        unawaited(
+          _ttsService.speak(
+            "I didn't quite catch that. Could you please say it again?",
+          ),
+        );
+      }
+      return;
+    }
+
     if (!_initialized) {
       await initialize();
     }
@@ -278,6 +293,17 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
       _activeServiceLabel = 'device';
       _notifyIfAlive();
       unawaited(_flushHistoryIfDirty(reason: "reminder-reply"));
+
+      if (speakReply && kDebugMode) {
+        debugPrint("CHAT: Triggering TTS for reminder reply");
+      }
+      if (speakReply) {
+        if (awaitReplySpeechCompletion) {
+          await _ttsService.speakAndWait(reminderReply);
+        } else {
+          unawaited(_ttsService.speak(reminderReply));
+        }
+      }
       return;
     }
 
@@ -309,6 +335,17 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
       _markHistoryDirty();
       _notifyIfAlive();
       unawaited(_flushHistoryIfDirty(reason: "reminder-reply-llm"));
+
+      if (speakReply && kDebugMode) {
+        debugPrint("CHAT: Triggering TTS for reminder reply");
+      }
+      if (speakReply) {
+        if (awaitReplySpeechCompletion) {
+          await _ttsService.speakAndWait(reminderReply);
+        } else {
+          unawaited(_ttsService.speak(reminderReply));
+        }
+      }
       return;
     }
 
