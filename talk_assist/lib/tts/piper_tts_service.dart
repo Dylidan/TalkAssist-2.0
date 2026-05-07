@@ -1,7 +1,6 @@
 import "dart:async";
 import "dart:io";
 import "dart:isolate";
-
 import "package:audioplayers/audioplayers.dart";
 import "package:flutter/foundation.dart";
 import "package:path_provider/path_provider.dart";
@@ -9,6 +8,7 @@ import "package:sherpa_onnx/sherpa_onnx.dart" as sherpa_onnx;
 import "package:talk_assist/tts/tts_config.dart";
 import "package:talk_assist/tts/tts_model_repository.dart";
 import "package:talk_assist/tts/tts_service.dart";
+import "package:talk_assist/tts/tts_chinese_text_normalizer.dart";
 
 // Isolate message for speech generation.
 class _SpeechGenerationRequest {
@@ -299,6 +299,10 @@ class PiperTtsService implements TtsService {
     //now it choose depends on text and ask for model
 
     final selectedVoice = TtsConfig.voiceForText(text);
+    final normalizedText = TtsTextNormalizer.normalizeForVoice(
+      text,
+      selectedVoice,
+    );
 
     final selectedModelRecord = await _modelRepository.ensureModelAvailable(
       voice: selectedVoice,
@@ -354,7 +358,7 @@ class PiperTtsService implements TtsService {
       //which is sent to the TTS engine to generate audio
 
       final request = _SpeechGenerationRequest(
-        text: text,
+        text: normalizedText,
         modelPath: selectedModelRecord.modelPath,
         tokensPath: selectedModelRecord.tokensPath,
         espeakDataDir: selectedModelRecord.espeakDataDir,
