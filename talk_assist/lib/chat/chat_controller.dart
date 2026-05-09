@@ -2,6 +2,7 @@ import "dart:async";
 
 import "package:flutter/foundation.dart";
 import "package:flutter/widgets.dart";
+import "package:talk_assist/audio/status_sound_service.dart";
 import "package:talk_assist/llm/history_store.dart";
 import "package:talk_assist/llm/llm_orchestrator.dart";
 import "package:talk_assist/message.dart";
@@ -63,11 +64,13 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
     LlmOrchestrator? orchestrator,
     ReminderNluService? reminderNluService,
     ReminderService? reminderService,
+    StatusSoundService? statusSoundService,
     TtsService? ttsService,
     Duration? historyFlushInterval,
   }) : _historyStore = historyStore ?? HistoryStore(),
        _orchestrator = orchestrator ?? LlmOrchestrator(),
        _reminderService = reminderService ?? ReminderService(),
+       _statusSoundService = statusSoundService ?? StatusSoundService(),
        _ttsService = ttsService ?? PiperTtsService(),
        _historyFlushInterval =
            historyFlushInterval ?? const Duration(seconds: 30) {
@@ -79,6 +82,7 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
   final LlmOrchestrator _orchestrator;
   late final ReminderNluService _reminderNluService;
   final ReminderService _reminderService;
+  final StatusSoundService _statusSoundService;
   final TtsService _ttsService;
   final Message _messageStore = Message.instance;
   final Duration _historyFlushInterval;
@@ -273,6 +277,9 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
     _markHistoryDirty();
     _notifyIfAlive();
     unawaited(_flushHistoryIfDirty(reason: "user-message"));
+    if (speakReply) {
+      unawaited(_statusSoundService.playThinkingCue());
+    }
 
     final reminderParse = ReminderRequest.parse(text);
     if (reminderParse.isReminderCommand) {
@@ -298,6 +305,7 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
         debugPrint("CHAT: Triggering TTS for reminder reply");
       }
       if (speakReply) {
+        await _statusSoundService.playReadyCue();
         if (awaitReplySpeechCompletion) {
           await _ttsService.speakAndWait(reminderReply);
         } else {
@@ -340,6 +348,7 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
         debugPrint("CHAT: Triggering TTS for reminder reply");
       }
       if (speakReply) {
+        await _statusSoundService.playReadyCue();
         if (awaitReplySpeechCompletion) {
           await _ttsService.speakAndWait(reminderReply);
         } else {
@@ -384,6 +393,7 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
       debugPrint("CHAT: Triggering TTS for reply");
     }
     if (speakReply) {
+      await _statusSoundService.playReadyCue();
       if (awaitReplySpeechCompletion) {
         await _ttsService.speakAndWait(reply.text);
       } else {
@@ -614,6 +624,7 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
 
     _disposed = true;
     unawaited(_orchestrator.dispose());
+    unawaited(_statusSoundService.dispose());
     unawaited(_ttsService.dispose());
     super.dispose();
   }
