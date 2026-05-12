@@ -19,6 +19,9 @@ abstract class TtsService {
   /// If the service is not ready, the speech request is silently ignored.
   Future<void> speak(String text);
 
+  /// Synthesizes and speaks the given [text], and resolves after playback ends.
+  Future<void> speakAndWait(String text);
+
   // Stops any currently playing speech.
   Future<void> stop();
 

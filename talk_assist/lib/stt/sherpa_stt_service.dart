@@ -1,92 +1,74 @@
-//This service wraps recording and offline transcription using Sherpa ONNX.
-//First check mic permission, make sure model files exist (download if needed
-//then  record WAV to a temp file, then pass the WAV to sherpa get a transcription string.
+// This service wraps recording and offline transcription using Sherpa ONNX.
+// It now uses streamed PCM audio plus Sherpa VAD to detect end-of-turn more
+// reliably than amplitude-only silence detection.
 
 import 'dart:async';
-import 'dart:io';
-import 'package:path_provider/path_provider.dart';
-import 'package:record/record.dart';
-import 'stt_service.dart';
-import 'stt_model_repository.dart';
+import 'dart:math' as math;
 import 'dart:typed_data';
+
+import 'package:record/record.dart';
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa_onnx;
 
+import 'stt_model_repository.dart';
+import 'stt_service.dart';
+
 class SherpaSttService implements SttService {
+  static const int _sampleRate = 16000;
+  static const double _vadThreshold = 0.5;
+  static const double _minSpeechDurationSeconds = 0.2;
+
   final AudioRecorder _recorder = AudioRecorder();
   final SttModelRepository _modelRepository = SttModelRepository();
+
   String? _modelDirPath;
-  String? _currentPath;
   bool _initialized = false;
+
+  Completer<String?>? _activeRecordingCompleter;
+  StreamSubscription<Uint8List>? _activeAudioStreamSubscription;
+  Timer? _activeMaxTimer;
+  sherpa_onnx.VoiceActivityDetector? _activeVad;
+  bool _isFinishingActiveRecording = false;
 
   @override
   Future<String?> recordUntilSilenceAndTranscribe({
     Duration maxDuration = const Duration(seconds: 20),
-    Duration silenceDuration = const Duration(milliseconds: 1200),
-    Duration leadingSilenceGrace = const Duration(seconds: 2),
-    double silenceThresholdDb = -42.0,
+    Duration silenceDuration = const Duration(milliseconds: 700),
+    Duration leadingSilenceGrace = const Duration(milliseconds: 800),
+    double silenceThresholdDb = -20.0,
   }) async {
-    await startRecording();
-
-    final startedAt = DateTime.now();
-    final completer = Completer<String?>();
-    StreamSubscription<Amplitude>? amplitudeSubscription;
-    Timer? maxTimer;
-    Timer? silenceTimer;
-    var completed = false;
-
-    Future<void> finishRecording() async {
-      if (completed) return;
-      completed = true;
-
-      await amplitudeSubscription?.cancel();
-      maxTimer?.cancel();
-      silenceTimer?.cancel();
-
-      try {
-        final text = await stopRecordingAndTranscribe();
-        if (!completer.isCompleted) {
-          completer.complete(text);
-        }
-      } catch (error, stackTrace) {
-        if (!completer.isCompleted) {
-          completer.completeError(error, stackTrace);
-        }
-      }
+    if (_activeRecordingCompleter != null &&
+        !_activeRecordingCompleter!.isCompleted) {
+      print('STT start: reusing active VAD recording session');
+      return _activeRecordingCompleter!.future;
     }
 
-    maxTimer = Timer(maxDuration, () {
-      unawaited(finishRecording());
-    });
+    await initialize();
 
-    amplitudeSubscription = _recorder
-        .onAmplitudeChanged(const Duration(milliseconds: 200))
-        .listen(
-          (amplitude) {
-            if (completed) {
-              return;
-            }
+    final completer = Completer<String?>();
+    _activeRecordingCompleter = completer;
 
-            final elapsed = DateTime.now().difference(startedAt);
-            if (elapsed < leadingSilenceGrace) {
-              return;
-            }
+    print(
+      'STT start: maxDuration=$maxDuration, silenceDuration=$silenceDuration, leadingSilenceGrace=$leadingSilenceGrace, mode=vad',
+    );
+    if (silenceThresholdDb != -20.0) {
+      print(
+        'STT start: ignoring silenceThresholdDb=$silenceThresholdDb because VAD does not use dB thresholds',
+      );
+    }
 
-            final isSilent = amplitude.current < silenceThresholdDb;
-            if (isSilent) {
-              silenceTimer ??= Timer(silenceDuration, () {
-                unawaited(finishRecording());
-              });
-              return;
-            }
-
-            silenceTimer?.cancel();
-            silenceTimer = null;
-          },
-          onError: (Object error, StackTrace stackTrace) {
-            unawaited(finishRecording());
-          },
-          cancelOnError: false,
-        );
+    try {
+      await _startVadRecordingSession(
+        maxDuration: maxDuration,
+        silenceDuration: silenceDuration,
+      );
+    } catch (error, stackTrace) {
+      if (!completer.isCompleted) {
+        completer.completeError(error, stackTrace);
+      }
+      if (identical(_activeRecordingCompleter, completer)) {
+        _activeRecordingCompleter = null;
+      }
+    }
 
     return completer.future;
   }
@@ -95,16 +77,15 @@ class SherpaSttService implements SttService {
   Future<void> initialize() async {
     if (_initialized) return;
 
-    //check mic permission and mdel exist
     final hasPermission = await _recorder.hasPermission();
     if (!hasPermission) {
-        throw Exception('Microphone permission denied');
+      throw Exception('Microphone permission denied');
     }
+
     await _modelRepository.ensureModelAvailable();
 
     final modelDir = await _modelRepository.getWhisperTinyEnDirectory();
     _modelDirPath = modelDir.path;
-
 
     final ready = await _modelRepository.isModelReady();
     print('STT model ready: $ready');
@@ -116,121 +97,347 @@ class SherpaSttService implements SttService {
 
   @override
   Future<void> startRecording() async {
+    print('STT startRecording: initialized=$_initialized');
     if (!_initialized) {
       await initialize();
     }
 
-    if (await _recorder.isRecording()) return;
+    if (_activeRecordingCompleter != null &&
+        !_activeRecordingCompleter!.isCompleted) {
+      print('STT startRecording: active VAD session already running');
+      return;
+    }
 
-    // create a temp WAV file name in the system temp dir
-    final dir = await getTemporaryDirectory();
-    final path =
-        '${dir.path}/stt_${DateTime.now().millisecondsSinceEpoch}.wav';
-
-    _currentPath = path;
-
-    // start recording WAV at 16kHz mono 
-    await _recorder.start(
-      const RecordConfig(
-        encoder: AudioEncoder.wav,
-        sampleRate: 16000,
-        numChannels: 1,
-        bitRate: 256000,
-      ),
-      path: path,
+    _activeRecordingCompleter = Completer<String?>();
+    await _startVadRecordingSession(
+      maxDuration: const Duration(minutes: 5),
+      silenceDuration: const Duration(milliseconds: 700),
     );
   }
 
   @override
   Future<String?> stopRecordingAndTranscribe() async {
-    if (!await _recorder.isRecording()) return null;
-
-    //Stop and get the path
-    final path = await _recorder.stop();
-    final finalPath = path ?? _currentPath;
-    _currentPath = null;
-
-    if (finalPath == null) return null;
-
-    final file = File(finalPath);
-    if (!await file.exists()) return null;
-
-    //hand the WAV file to sherpa_onnx and normalize empty
-    final text = await _transcribeFile(finalPath);
-    return text?.trim().isEmpty == true ? null : text?.trim();
-  }
-
-  //Actual transcription using sherpa_onnx
-  Future<String?> _transcribeFile(String wavPath) async {
-    if (_modelDirPath == null) {
-        throw Exception('STT model directory is not initialized');
+    if (_activeRecordingCompleter != null &&
+        !_activeRecordingCompleter!.isCompleted) {
+      final completer = _activeRecordingCompleter!;
+      print('STT stop: manual stop requested');
+      unawaited(_finishActiveRecording(reason: 'manual-stop', flushVad: true));
+      return completer.future;
     }
 
-    // get the file paths the model repo provides
+    return null;
+  }
+
+  Future<void> _startVadRecordingSession({
+    required Duration maxDuration,
+    required Duration silenceDuration,
+  }) async {
+    final expected = await _modelRepository.getExpectedFilePaths();
+    final vadPath = expected['vad'];
+    if (vadPath == null || vadPath.isEmpty) {
+      throw Exception('STT VAD model path is missing');
+    }
+
+    final vadConfig = sherpa_onnx.VadModelConfig(
+      sileroVad: sherpa_onnx.SileroVadModelConfig(
+        model: vadPath,
+        threshold: _vadThreshold,
+        minSilenceDuration: silenceDuration.inMilliseconds / 1000.0,
+        minSpeechDuration: _minSpeechDurationSeconds,
+        maxSpeechDuration: maxDuration.inMilliseconds / 1000.0,
+      ),
+      sampleRate: _sampleRate,
+      numThreads: 1,
+      provider: 'cpu',
+      debug: false,
+    );
+
+    final bufferSizeInSeconds = maxDuration.inMilliseconds / 1000.0 + 1.0;
+    _activeVad = sherpa_onnx.VoiceActivityDetector(
+      config: vadConfig,
+      bufferSizeInSeconds: bufferSizeInSeconds,
+    );
+
+    print('STT startRecording: starting PCM stream for VAD');
+    final audioStream = await _recorder.startStream(
+      const RecordConfig(
+        encoder: AudioEncoder.pcm16bits,
+        sampleRate: _sampleRate,
+        numChannels: 1,
+        autoGain: false,
+        echoCancel: true,
+        noiseSuppress: true,
+        streamBufferSize: 4096,
+      ),
+    );
+    print('STT startRecording: recorder.startStream() completed');
+
+    _activeMaxTimer?.cancel();
+    _activeMaxTimer = Timer(maxDuration, () {
+      print('STT stop: max duration reached');
+      unawaited(_finishActiveRecording(reason: 'max-duration', flushVad: true));
+    });
+
+    _activeAudioStreamSubscription = audioStream.listen(
+      _handleAudioChunk,
+      onError: (Object error, StackTrace stackTrace) {
+        print('STT stream error: $error');
+        unawaited(_failActiveRecording(error, stackTrace));
+      },
+      onDone: () {
+        print('STT stream: audio stream closed');
+      },
+      cancelOnError: false,
+    );
+  }
+
+  void _handleAudioChunk(Uint8List chunk) {
+    final vad = _activeVad;
+    if (vad == null || chunk.isEmpty) {
+      return;
+    }
+
+    final samples = _convertPcm16ChunkToFloat32(chunk);
+    if (samples.isEmpty) {
+      return;
+    }
+
+    vad.acceptWaveform(samples);
+
+    if (vad.isDetected()) {
+      print('STT vad: speech endpoint detected');
+    }
+
+    while (!vad.isEmpty()) {
+      final segment = vad.front();
+      vad.pop();
+
+      if (segment.samples.isEmpty) {
+        continue;
+      }
+
+      print(
+        'STT vad: segment ready start=${segment.start} samples=${segment.samples.length}',
+      );
+      unawaited(
+        _finishActiveRecording(
+          reason: 'vad-endpoint',
+          detectedSamples: segment.samples,
+        ),
+      );
+      return;
+    }
+  }
+
+  Future<String?> _finishActiveRecording({
+    required String reason,
+    bool flushVad = false,
+    Float32List? detectedSamples,
+  }) async {
+    if (_isFinishingActiveRecording) {
+      final completer = _activeRecordingCompleter;
+      return completer == null ? null : completer.future;
+    }
+
+    _isFinishingActiveRecording = true;
+    final completer = _activeRecordingCompleter;
+    final vad = _activeVad;
+
+    _activeMaxTimer?.cancel();
+    _activeMaxTimer = null;
+
+    try {
+      Float32List? finalSamples = detectedSamples;
+
+      if (finalSamples == null && flushVad && vad != null) {
+        print('STT stop: flushing VAD for reason=$reason');
+        vad.flush();
+        while (!vad.isEmpty()) {
+          final segment = vad.front();
+          vad.pop();
+          if (segment.samples.isNotEmpty) {
+            finalSamples = segment.samples;
+            break;
+          }
+        }
+      }
+
+      await _activeAudioStreamSubscription?.cancel();
+      _activeAudioStreamSubscription = null;
+
+      if (await _recorder.isRecording()) {
+        await _recorder.stop();
+      }
+
+      String? text;
+      if (finalSamples == null || finalSamples.isEmpty) {
+        print('STT stop: no speech segment available for reason=$reason');
+        text = null;
+      } else {
+        text = await _transcribeSamples(finalSamples, _sampleRate);
+      }
+
+      if (completer != null && !completer.isCompleted) {
+        completer.complete(text);
+      }
+      return text;
+    } catch (error, stackTrace) {
+      if (completer != null && !completer.isCompleted) {
+        completer.completeError(error, stackTrace);
+      }
+      rethrow;
+    } finally {
+      _freeActiveVad();
+      if (identical(_activeRecordingCompleter, completer)) {
+        _activeRecordingCompleter = null;
+      }
+      _isFinishingActiveRecording = false;
+    }
+  }
+
+  Float32List _convertPcm16ChunkToFloat32(Uint8List chunk) {
+    final pcmSamples = _recorder.convertBytesToInt16(chunk);
+    final samples = Float32List(pcmSamples.length);
+    for (var i = 0; i < pcmSamples.length; i++) {
+      samples[i] = pcmSamples[i] / 32768.0;
+    }
+    return samples;
+  }
+
+  Future<String?> _transcribeSamples(
+    Float32List samples,
+    int sampleRate,
+  ) async {
+    if (_modelDirPath == null) {
+      throw Exception('STT model directory is not initialized');
+    }
+
     final expected = await _modelRepository.getExpectedFilePaths();
     final encoder = expected['encoder']!;
     final decoder = expected['decoder']!;
     final tokens = expected['tokens']!;
 
-    print('STT transcribe: wavPath=$wavPath');
-    print('STT transcribe: encoder=$encoder');
-    print('STT transcribe: decoder=$decoder');
-    print('STT transcribe: tokens=$tokens');
-
-    // read wave then samples + sampleRate
-    final waveData = await sherpa_onnx.readWave(wavPath);
-    final samples = waveData.samples;
-    final sampleRate = waveData.sampleRate;
-
     print(
-        'STT transcribe: samples=${samples.length}, sampleRate=$sampleRate',
+      'STT transcribe: samples=${samples.length}, sampleRate=$sampleRate, mode=vad',
     );
 
-    //Simple config for the offline recognizer
+    if (sampleRate <= 0 || samples.isEmpty) {
+      print(
+        'STT transcribe: no samples available from detected speech segment',
+      );
+      return null;
+    }
+
+    final durationSeconds = samples.length / sampleRate;
+    final rmsEnergy = _rmsEnergy(samples);
+    final peakEnergy = _peakEnergy(samples);
+    print(
+      'STT transcribe: duration=${durationSeconds.toStringAsFixed(2)}s, '
+      'rms=${rmsEnergy.toStringAsFixed(4)}, peak=${peakEnergy.toStringAsFixed(4)}',
+    );
+
     final config = sherpa_onnx.OfflineRecognizerConfig(
-        model: sherpa_onnx.OfflineModelConfig(
-            whisper: sherpa_onnx.OfflineWhisperModelConfig(
-            encoder: encoder,
-            decoder: decoder,
-            language: 'en',
-            task: 'transcribe',
-            ),
-            tokens: tokens,
-            debug: true,
-            numThreads: 2,
+      model: sherpa_onnx.OfflineModelConfig(
+        whisper: sherpa_onnx.OfflineWhisperModelConfig(
+          encoder: encoder,
+          decoder: decoder,
+          language: '',
+          task: 'transcribe',
         ),
+        tokens: tokens,
+        debug: false,
+        modelType: 'whisper',
+        numThreads: 2,
+      ),
     );
 
     final recognizer = sherpa_onnx.OfflineRecognizer(config);
     final stream = recognizer.createStream();
 
-    //Push waveform samples into the recognizer
-    //Then decode and grab the text result
-    stream.acceptWaveform(
-        samples: Float32List.fromList(samples),
-        sampleRate: sampleRate,
-    );
-
+    stream.acceptWaveform(samples: samples, sampleRate: sampleRate);
     recognizer.decode(stream);
 
     final result = recognizer.getResult(stream);
     final text = result.text.trim();
 
-    // free native resources
     stream.free();
     recognizer.free();
 
     print('STT transcribe result: $text');
-
     return text.isEmpty ? null : text;
+  }
+
+  double _rmsEnergy(Float32List samples) {
+    if (samples.isEmpty) {
+      return 0;
+    }
+
+    var sumSquares = 0.0;
+    for (final sample in samples) {
+      sumSquares += sample * sample;
+    }
+    return math.sqrt(sumSquares / samples.length);
+  }
+
+  double _peakEnergy(Float32List samples) {
+    var peak = 0.0;
+    for (final sample in samples) {
+      final absolute = sample.abs();
+      if (absolute > peak) {
+        peak = absolute;
+      }
+    }
+    return peak;
+  }
+
+  void _freeActiveVad() {
+    final vad = _activeVad;
+    _activeVad = null;
+    vad?.free();
+  }
+
+  Future<void> _failActiveRecording(Object error, StackTrace stackTrace) async {
+    final completer = _activeRecordingCompleter;
+    _activeRecordingCompleter = null;
+
+    _activeMaxTimer?.cancel();
+    _activeMaxTimer = null;
+
+    await _activeAudioStreamSubscription?.cancel();
+    _activeAudioStreamSubscription = null;
+
+    _freeActiveVad();
+
+    if (await _recorder.isRecording()) {
+      await _recorder.cancel();
+    }
+
+    if (completer != null && !completer.isCompleted) {
+      completer.completeError(error, stackTrace);
+    }
   }
 
   @override
   Future<void> cancel() async {
+    print('STT cancel: cancelling active recording');
+    final completer = _activeRecordingCompleter;
+    _activeRecordingCompleter = null;
+
+    _activeMaxTimer?.cancel();
+    _activeMaxTimer = null;
+
+    await _activeAudioStreamSubscription?.cancel();
+    _activeAudioStreamSubscription = null;
+
+    _freeActiveVad();
+
     if (await _recorder.isRecording()) {
-      await _recorder.stop();
+      await _recorder.cancel();
     }
-    _currentPath = null;
+
+    if (completer != null && !completer.isCompleted) {
+      completer.complete(null);
+    }
   }
 
   @override

@@ -3,7 +3,7 @@
 //Then downloads missing files from the internet
 
 import 'dart:io';
-import 'package:http/http.dart' as http;
+
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -45,6 +45,11 @@ class SttModelRepository {
         return File('${dir.path}/${SttConfig.tokensFileName}');
     }
 
+    Future<File> getVadFile() async {
+        final baseDir = await getBaseModelDirectory();
+        return File('${baseDir.path}/${SttConfig.vadFileName}');
+    }
+
     //Quick check for encoder/decoder/tokens file
     Future<bool> isModelReady() async {
         final encoderFile = await getEncoderFile();
@@ -54,16 +59,20 @@ class SttModelRepository {
         final encoderExists = await encoderFile.exists();
         final decoderExists = await decoderFile.exists();
         final tokensExists = await tokensFile.exists();
+        final vadFile = await getVadFile();
+        final vadExists = await vadFile.exists();
 
-        if (!encoderExists || !decoderExists || !tokensExists) {
+        if (!encoderExists || !decoderExists || !tokensExists || !vadExists) {
         return false;
         }
 
         final encoderSize = await encoderFile.length();
         final decoderSize = await decoderFile.length();
+        final vadSize = await vadFile.length();
 
         return encoderSize >= SttConfig.minimumEncoderSizeBytes &&
-            decoderSize >= SttConfig.minimumDecoderSizeBytes;
+            decoderSize >= SttConfig.minimumDecoderSizeBytes &&
+            vadSize >= SttConfig.minimumVadSizeBytes;
     }
 
     //Return the expected full paths for encoder/decoder/tokens
@@ -74,6 +83,7 @@ class SttModelRepository {
         'encoder': '${dir.path}/${SttConfig.encoderFileName}',
         'decoder': '${dir.path}/${SttConfig.decoderFileName}',
         'tokens': '${dir.path}/${SttConfig.tokensFileName}',
+        'vad': '${(await getVadFile()).path}',
         };
     }
 
@@ -85,9 +95,12 @@ class SttModelRepository {
         final encoderExists = await encoderFile.exists();
         final decoderExists = await decoderFile.exists();
         final tokensExists = await tokensFile.exists();
+        final vadFile = await getVadFile();
+        final vadExists = await vadFile.exists();
 
         int encoderSize = 0;
         int decoderSize = 0;
+        int vadSize = 0;
 
         if (encoderExists) {
         encoderSize = await encoderFile.length();
@@ -95,8 +108,11 @@ class SttModelRepository {
         if (decoderExists) {
         decoderSize = await decoderFile.length();
         }
+        if (vadExists) {
+        vadSize = await vadFile.length();
+        }
 
-        return 'encoderExists=$encoderExists, decoderExists=$decoderExists, tokensExists=$tokensExists, encoderSize=$encoderSize, decoderSize=$decoderSize';
+        return 'encoderExists=$encoderExists, decoderExists=$decoderExists, tokensExists=$tokensExists, vadExists=$vadExists, encoderSize=$encoderSize, decoderSize=$decoderSize, vadSize=$vadSize';
     }
 
     //Save the path for SharedPreferences 
@@ -137,6 +153,7 @@ class SttModelRepository {
         final encoderFile = await getEncoderFile();
         final decoderFile = await getDecoderFile();
         final tokensFile = await getTokensFile();
+        final vadFile = await getVadFile();
 
         // clear any saved state 
         await clearSavedModelState();
@@ -155,6 +172,10 @@ class SttModelRepository {
             if (!await tokensFile.exists()) {
             print('STT download: downloading tokens...');
             await _downloadFile(SttConfig.tokensUrl, tokensFile);
+            }
+            if (!await vadFile.exists()) {
+            print('STT download: downloading vad model...');
+            await _downloadFile(SttConfig.vadUrl, vadFile);
             }
 
             final nowReady = await isModelReady();
@@ -175,6 +196,9 @@ class SttModelRepository {
             if (await tokensFile.exists() && await tokensFile.length() == 0) {
             await tokensFile.delete();
             }
+            if (await vadFile.exists() && await vadFile.length() == 0) {
+            await vadFile.delete();
+            }
             rethrow;
         }
     }
@@ -185,23 +209,49 @@ class SttModelRepository {
         await prefs.remove(SttConfig.prefsModelReadyKey);
     }
 
-    //Download helper with a timeout and basic error checks.
+    //Download helper — streams to disk instead of buffering in memory.
     Future<void> _downloadFile(String url, File outputFile) async {
         print('STT download: sending GET request for $url');
 
-        final response = await http.get(Uri.parse(url)).timeout(
-            const Duration(minutes: 3),
-            onTimeout: () => throw Exception('STT file download timed out: $url'),
-        );
+        final client = HttpClient();
+        try {
+            final request = await client.getUrl(Uri.parse(url));
+            final response = await request.close();
 
-        print('STT download: response status = ${response.statusCode}');
-        if (response.statusCode != 200) {
-            throw Exception('Failed to download STT file: ${response.statusCode} $url');
+            print('STT download: response status = ${response.statusCode}');
+            if (response.statusCode < 200 || response.statusCode >= 300) {
+                throw Exception('Failed to download STT file: ${response.statusCode} $url');
+            }
+
+            final sink = outputFile.openWrite();
+            final totalBytes = response.contentLength > 0
+                ? response.contentLength
+                : -1;
+            var receivedBytes = 0;
+
+            await for (final chunk in response) {
+                sink.add(chunk);
+                receivedBytes += chunk.length;
+
+                // Log progress every ~10%
+                if (totalBytes > 0) {
+                    final percent = (receivedBytes * 100 ~/ totalBytes);
+                    if (percent % 10 == 0) {
+                        final receivedMB = (receivedBytes / 1024 / 1024).toStringAsFixed(1);
+                        final totalMB = (totalBytes / 1024 / 1024).toStringAsFixed(1);
+                        print('STT download: $percent% ($receivedMB / $totalMB MB)');
+                    }
+                }
+            }
+
+            await sink.flush();
+            await sink.close();
+
+            print('STT download: received $receivedBytes bytes');
+            print('STT download: saved ${outputFile.path}');
+        } finally {
+            client.close(force: true);
         }
-
-        print('STT download: received ${response.bodyBytes.length} bytes');
-        await outputFile.writeAsBytes(response.bodyBytes, flush: true);
-        print('STT download: saved ${outputFile.path}');
     }
 
 }

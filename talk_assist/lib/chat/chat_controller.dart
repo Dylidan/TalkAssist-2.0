@@ -2,6 +2,7 @@ import "dart:async";
 
 import "package:flutter/foundation.dart";
 import "package:flutter/widgets.dart";
+import "package:talk_assist/audio/status_sound_service.dart";
 import "package:talk_assist/llm/history_store.dart";
 import "package:talk_assist/llm/llm_orchestrator.dart";
 import "package:talk_assist/message.dart";
@@ -63,11 +64,13 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
     LlmOrchestrator? orchestrator,
     ReminderNluService? reminderNluService,
     ReminderService? reminderService,
+    StatusSoundService? statusSoundService,
     TtsService? ttsService,
     Duration? historyFlushInterval,
   }) : _historyStore = historyStore ?? HistoryStore(),
        _orchestrator = orchestrator ?? LlmOrchestrator(),
        _reminderService = reminderService ?? ReminderService(),
+       _statusSoundService = statusSoundService ?? StatusSoundService(),
        _ttsService = ttsService ?? PiperTtsService(),
        _historyFlushInterval =
            historyFlushInterval ?? const Duration(seconds: 30) {
@@ -79,9 +82,11 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
   final LlmOrchestrator _orchestrator;
   late final ReminderNluService _reminderNluService;
   final ReminderService _reminderService;
+  final StatusSoundService _statusSoundService;
   final TtsService _ttsService;
   final Message _messageStore = Message.instance;
   final Duration _historyFlushInterval;
+  static const Duration _serviceStatusInterval = Duration(seconds: 30);
 
   /// Temporary assistant placeholders such as the "..." bubble.
   final List<_PendingUiMessage> _pendingMessages = <_PendingUiMessage>[];
@@ -91,7 +96,9 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Prevents overlapping history writes when multiple flushes are requested.
   Future<void>? _historyFlushFuture;
+  Future<void>? _serviceStatusRefreshFuture;
   Timer? _historyFlushTimer;
+  Timer? _serviceStatusTimer;
   bool _historyDirty = false;
   bool _initialized = false;
   bool _disposed = false;
@@ -127,12 +134,10 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
         .where((item) => item.conversationId == activeId)
         .map((item) => item.message);
 
-    return List<ChatUiMessage>.unmodifiable(
-      <ChatUiMessage>[
-        ..._mapHistoryToUiMessages(history),
-        ...pendingForActive,
-      ],
-    );
+    return List<ChatUiMessage>.unmodifiable(<ChatUiMessage>[
+      ..._mapHistoryToUiMessages(history),
+      ...pendingForActive,
+    ]);
   }
 
   /// Loads persisted chat history, primes the orchestrator, and starts helpers
@@ -174,6 +179,8 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
     _historyDirty = false;
     _registerLifecycleObserver();
     _startHistoryFlushTimer();
+    _startServiceStatusTimer();
+    unawaited(_refreshActiveServiceLabel(reason: "startup"));
     _notifyIfAlive();
   }
 
@@ -227,9 +234,28 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
   /// Main entry point for user input.
   /// Saves the user message, shows a pending assistant bubble, then routes the
   /// input through reminder handling or the LLM before storing the final reply.
-  Future<void> sendUserMessage(String rawInput) async {
+  Future<void> sendUserMessage(
+    String rawInput, {
+    bool speakReply = true,
+    bool awaitReplySpeechCompletion = false,
+  }) async {
     final text = rawInput.trim();
     if (text.isEmpty || _disposed) {
+      return;
+    }
+
+    // Ignore STT background noise like [static], (sigh), etc.
+    if (RegExp(r'^(\[.*\]|\(.*\))$').hasMatch(text)) {
+      if (kDebugMode) {
+        debugPrint("CHAT: STT noise detected, ignoring user message: $text");
+      }
+      if (speakReply) {
+        unawaited(
+          _ttsService.speak(
+            "I didn't quite catch that. Could you please say it again?",
+          ),
+        );
+      }
       return;
     }
 
@@ -251,6 +277,9 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
     _markHistoryDirty();
     _notifyIfAlive();
     unawaited(_flushHistoryIfDirty(reason: "user-message"));
+    if (speakReply) {
+      unawaited(_statusSoundService.playThinkingCue());
+    }
 
     final reminderParse = ReminderRequest.parse(text);
     if (reminderParse.isReminderCommand) {
@@ -271,11 +300,25 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
       _activeServiceLabel = 'device';
       _notifyIfAlive();
       unawaited(_flushHistoryIfDirty(reason: "reminder-reply"));
+
+      if (speakReply && kDebugMode) {
+        debugPrint("CHAT: Triggering TTS for reminder reply");
+      }
+      if (speakReply) {
+        await _statusSoundService.playReadyCue();
+        if (awaitReplySpeechCompletion) {
+          await _ttsService.speakAndWait(reminderReply);
+        } else {
+          unawaited(_ttsService.speak(reminderReply));
+        }
+      }
       return;
     }
 
     if (kDebugMode) {
-      debugPrint("REMINDER_NLU: Trying natural-language reminder parse for: $text");
+      debugPrint(
+        "REMINDER_NLU: Trying natural-language reminder parse for: $text",
+      );
     }
     final llmReminderParse = await _reminderNluService.tryParse(text);
     if (kDebugMode) {
@@ -300,6 +343,18 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
       _markHistoryDirty();
       _notifyIfAlive();
       unawaited(_flushHistoryIfDirty(reason: "reminder-reply-llm"));
+
+      if (speakReply && kDebugMode) {
+        debugPrint("CHAT: Triggering TTS for reminder reply");
+      }
+      if (speakReply) {
+        await _statusSoundService.playReadyCue();
+        if (awaitReplySpeechCompletion) {
+          await _ttsService.speakAndWait(reminderReply);
+        } else {
+          unawaited(_ttsService.speak(reminderReply));
+        }
+      }
       return;
     }
 
@@ -329,14 +384,22 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
     );
     _orchestrator.setHistorySnapshot(_messageStore.historyForLlm());
     _markHistoryDirty();
-    _activeServiceLabel = _labelForOrigin(reply.origin);
+    _activeServiceLabel = _labelForReply(reply);
     _notifyIfAlive();
     unawaited(_flushHistoryIfDirty(reason: "assistant-reply"));
+    unawaited(_refreshActiveServiceLabel(reason: "assistant-reply"));
 
-    if (kDebugMode) {
+    if (speakReply && kDebugMode) {
       debugPrint("CHAT: Triggering TTS for reply");
     }
-    unawaited(_ttsService.speak(reply.text));
+    if (speakReply) {
+      await _statusSoundService.playReadyCue();
+      if (awaitReplySpeechCompletion) {
+        await _ttsService.speakAndWait(reply.text);
+      } else {
+        unawaited(_ttsService.speak(reply.text));
+      }
+    }
   }
 
   /// Converts a parsed reminder request into a device action reply string.
@@ -370,9 +433,12 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
       case AppLifecycleState.paused:
       case AppLifecycleState.detached:
       case AppLifecycleState.hidden:
+        _serviceStatusTimer?.cancel();
         unawaited(_flushHistoryIfDirty(reason: "lifecycle:${state.name}"));
         break;
       case AppLifecycleState.resumed:
+        _startServiceStatusTimer();
+        unawaited(_refreshActiveServiceLabel(reason: "resume"));
         break;
     }
   }
@@ -424,6 +490,23 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
     _historyFlushTimer?.cancel();
     _historyFlushTimer = Timer.periodic(_historyFlushInterval, (_) {
       unawaited(_flushHistoryIfDirty(reason: "timer"));
+    });
+  }
+
+  /// Periodically checks which backend is actually usable.
+  ///
+  /// OpenRouter readiness is cached at the service layer, so this does not run
+  /// a chat completion or continuously hammer the network.
+  void _startServiceStatusTimer() {
+    _serviceStatusTimer?.cancel();
+    if (kDebugMode) {
+      debugPrint(
+        "CHAT: starting service status timer "
+        "(intervalSeconds=${_serviceStatusInterval.inSeconds})",
+      );
+    }
+    _serviceStatusTimer = Timer.periodic(_serviceStatusInterval, (_) {
+      unawaited(_refreshActiveServiceLabel(reason: "timer"));
     });
   }
 
@@ -487,26 +570,84 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
+  Future<void> _refreshActiveServiceLabel({required String reason}) {
+    if (_disposed || !_initialized) {
+      return Future<void>.value();
+    }
+
+    final existing = _serviceStatusRefreshFuture;
+    if (existing != null) {
+      return existing;
+    }
+
+    final future = _refreshActiveServiceLabelInternal(reason: reason);
+    _serviceStatusRefreshFuture = future;
+    return future.whenComplete(() {
+      if (identical(_serviceStatusRefreshFuture, future)) {
+        _serviceStatusRefreshFuture = null;
+      }
+    });
+  }
+
+  Future<void> _refreshActiveServiceLabelInternal({
+    required String reason,
+  }) async {
+    try {
+      if (kDebugMode) {
+        debugPrint("CHAT: refreshing service label ($reason)");
+      }
+      final backend = await _orchestrator.preferredBackend();
+      final label = _labelForOrigin(backend);
+      if (_activeServiceLabel != label) {
+        if (kDebugMode) {
+          debugPrint("CHAT: service label changed to $label ($reason)");
+        }
+        _activeServiceLabel = label;
+        _notifyIfAlive();
+      } else if (kDebugMode) {
+        debugPrint("CHAT: service label unchanged: $label ($reason)");
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint("CHAT: service status refresh failed ($reason): $e");
+      }
+    }
+  }
+
   @override
   /// Cleans up timers, lifecycle hooks, persistence, and background services.
   void dispose() {
     _historyFlushTimer?.cancel();
+    _serviceStatusTimer?.cancel();
     _unregisterLifecycleObserver();
     unawaited(_flushHistoryIfDirty(reason: "dispose"));
 
     _disposed = true;
     unawaited(_orchestrator.dispose());
+    unawaited(_statusSoundService.dispose());
     unawaited(_ttsService.dispose());
     super.dispose();
   }
 
   String _labelForOrigin(AssistantOrigin origin) {
     switch (origin) {
-      case AssistantOrigin.onlineLlm:    return 'online';
-      case AssistantOrigin.localLlm:     return 'on-device';
-      case AssistantOrigin.safeMode:     return 'safe mode';
-      case AssistantOrigin.deviceAction: return 'device';
-      case AssistantOrigin.queuedReplay: return 'queued';
+      case AssistantOrigin.onlineLlm:
+        return 'online';
+      case AssistantOrigin.localLlm:
+        return 'on-device';
+      case AssistantOrigin.safeMode:
+        return 'safe mode';
+      case AssistantOrigin.deviceAction:
+        return 'device';
+      case AssistantOrigin.queuedReplay:
+        return 'queued';
     }
+  }
+
+  String _labelForReply(LlmOrchestratorReply reply) {
+    if (reply.usedOnlineSearch) {
+      return 'online';
+    }
+    return _labelForOrigin(reply.origin);
   }
 }

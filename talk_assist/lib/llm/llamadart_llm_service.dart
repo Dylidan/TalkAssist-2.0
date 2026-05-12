@@ -6,6 +6,7 @@ import "package:llamadart/llamadart.dart";
 import "package:talk_assist/llm/llm_service.dart";
 import "package:talk_assist/llm/model_config.dart";
 import "package:talk_assist/llm/model_repository.dart";
+import "package:talk_assist/llm/system_prompt_builder.dart";
 import "package:talk_assist/message.dart";
 
 /// On-device LLM service using the llamadart plugin (llama.cpp).
@@ -157,11 +158,13 @@ class LlamadartLlmService implements LlmService {
       );
     }
 
+    final dynamicSystemPrompt = await SystemPromptBuilder.buildDynamicSystemPrompt();
+
     final messages = _buildMessages(
       history: history,
       userInput: userInput,
       historyLimit: ModelConfig.maxHistoryMessages,
-      systemPrompt: ModelConfig.systemPrompt,
+      systemPrompt: dynamicSystemPrompt,
     );
 
     final contextUsage = await _contextWindowUsage(messages: messages);

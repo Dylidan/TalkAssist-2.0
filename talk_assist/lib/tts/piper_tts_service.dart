@@ -1,7 +1,6 @@
 import "dart:async";
 import "dart:io";
 import "dart:isolate";
-
 import "package:audioplayers/audioplayers.dart";
 import "package:flutter/foundation.dart";
 import "package:path_provider/path_provider.dart";
@@ -9,6 +8,7 @@ import "package:sherpa_onnx/sherpa_onnx.dart" as sherpa_onnx;
 import "package:talk_assist/tts/tts_config.dart";
 import "package:talk_assist/tts/tts_model_repository.dart";
 import "package:talk_assist/tts/tts_service.dart";
+import "package:talk_assist/tts/tts_chinese_text_normalizer.dart";
 
 // Isolate message for speech generation.
 class _SpeechGenerationRequest {
@@ -46,6 +46,85 @@ class _SpeechGenerationResponse {
   final int? sampleRate;
 }
 
+_SpeechGenerationResponse _generateSpeechInIsolate(
+  _SpeechGenerationRequest request,
+) {
+  try {
+    sherpa_onnx.initBindings();
+
+    final modelDir = File(request.modelPath).parent.path;
+    final lexiconPath = "$modelDir/lexicon.txt";
+
+    final hasEspeak = Directory(request.espeakDataDir).existsSync();
+    final hasLexicon = File(lexiconPath).existsSync();
+
+    late final sherpa_onnx.OfflineTtsVitsModelConfig vits;
+
+    if (hasEspeak) {
+      // English / models that include espeak data
+      vits = sherpa_onnx.OfflineTtsVitsModelConfig(
+        model: request.modelPath,
+        tokens: request.tokensPath,
+        dataDir: request.espeakDataDir,
+      );
+    } else if (hasLexicon) {
+      // Chinese / models that provide a lexicon.txt
+      vits = sherpa_onnx.OfflineTtsVitsModelConfig(
+        model: request.modelPath,
+        tokens: request.tokensPath,
+        lexicon: lexiconPath,
+      );
+    } else {
+      // Fallback minimal config
+      vits = sherpa_onnx.OfflineTtsVitsModelConfig(
+        model: request.modelPath,
+        tokens: request.tokensPath,
+      );
+    }
+
+    final modelConfig = sherpa_onnx.OfflineTtsModelConfig(
+      vits: vits,
+      numThreads: request.numThreads,
+      debug: TtsConfig.debugMode,
+      provider: TtsConfig.onnxProvider,
+    );
+
+    final config = sherpa_onnx.OfflineTtsConfig(
+      model: modelConfig,
+      maxNumSenetences: TtsConfig.maxNumSentences,
+    );
+
+    final tts = sherpa_onnx.OfflineTts(config);
+    final audio = tts.generate(
+      text: request.text,
+      sid: request.speakerId,
+      speed: request.speed,
+    );
+
+    final success = sherpa_onnx.writeWave(
+      filename: request.outputPath,
+      samples: audio.samples,
+      sampleRate: audio.sampleRate,
+    );
+
+    tts.free();
+
+    if (!success) {
+      return const _SpeechGenerationResponse(
+        success: false,
+        error: "Failed to write WAV file",
+      );
+    }
+
+    return _SpeechGenerationResponse(
+      success: true,
+      sampleRate: audio.sampleRate,
+    );
+  } catch (e) {
+    return _SpeechGenerationResponse(success: false, error: e.toString());
+  }
+}
+
 /// Piper TTS implementation using sherpa_onnx.
 /// Downloads the voice model on first use and caches it locally.
 /// Generates speech on an Isolate to avoid blocking the UI thread.
@@ -54,7 +133,9 @@ class PiperTtsService implements TtsService {
     TtsModelRepository? modelRepository,
     AudioPlayer? audioPlayer,
   }) : _modelRepository = modelRepository ?? TtsModelRepository(),
-       _audioPlayer = audioPlayer ?? AudioPlayer();
+       _audioPlayer = audioPlayer ?? AudioPlayer() {
+    _audioPlayer.setReleaseMode(ReleaseMode.stop);
+  }
 
   final TtsModelRepository _modelRepository;
   final AudioPlayer _audioPlayer;
@@ -63,6 +144,7 @@ class PiperTtsService implements TtsService {
   bool _initialized = false;
   bool _disposed = false;
   bool _isSpeaking = false;
+  Completer<void>? _playbackCompleter;
   final _initCompleter = Completer<void>();
 
   @override
@@ -150,6 +232,18 @@ class PiperTtsService implements TtsService {
 
   @override
   Future<void> speak(String text) async {
+    await _speakInternal(text, awaitPlaybackCompletion: false);
+  }
+
+  @override
+  Future<void> speakAndWait(String text) async {
+    await _speakInternal(text, awaitPlaybackCompletion: true);
+  }
+
+  Future<void> _speakInternal(
+    String text, {
+    required bool awaitPlaybackCompletion,
+  }) async {
     if (_disposed) {
       if (kDebugMode) {
         debugPrint("TTS SPEAK: Skipped - service disposed");
@@ -194,12 +288,34 @@ class PiperTtsService implements TtsService {
       }
     }
 
-    if (_modelRecord == null) {
+    //
+    // if (_modelRecord == null) {
+    //   if (kDebugMode) {
+    //     debugPrint("TTS SPEAK: SKIPPED - no model record available");
+    //   }
+    //   return;
+    // }
+    //Again, english only before, it will skip if theres not model record
+    //now it choose depends on text and ask for model
+
+    final selectedVoice = TtsConfig.voiceForText(text);
+    final normalizedText = TtsTextNormalizer.normalizeForVoice(
+      text,
+      selectedVoice,
+    );
+
+    final selectedModelRecord = await _modelRepository.ensureModelAvailable(
+      voice: selectedVoice,
+    );
+
+    if (selectedModelRecord == null) {
       if (kDebugMode) {
         debugPrint("TTS SPEAK: SKIPPED - no model record available");
       }
       return;
     }
+
+    _modelRecord = selectedModelRecord;
 
     // Stop any current speech.
     if (_isSpeaking) {
@@ -210,6 +326,8 @@ class PiperTtsService implements TtsService {
     }
 
     _isSpeaking = true;
+    final playbackCompleter = Completer<void>();
+    _playbackCompleter = playbackCompleter;
 
     if (kDebugMode) {
       debugPrint("TTS SPEAK: Starting speech generation...");
@@ -225,11 +343,25 @@ class PiperTtsService implements TtsService {
         debugPrint("TTS SPEAK: Output path: $outputPath");
       }
 
+      // final request = _SpeechGenerationRequest(
+      //   text: text,
+      //   modelPath: _modelRecord!.modelPath,
+      //   tokensPath: _modelRecord!.tokensPath,
+      //   espeakDataDir: _modelRecord!.espeakDataDir,
+      //   outputPath: outputPath,
+      //   speed: TtsConfig.speechSpeed,
+      //   speakerId: TtsConfig.speakerId,
+      //   numThreads: TtsConfig.synthesisThreads,
+      // );
+      //So it uses voiceForText → ensureModelAvailable to select and prepare the correct voice model
+      //then packages the model paths and text into a SpeechGenerationRequest
+      //which is sent to the TTS engine to generate audio
+
       final request = _SpeechGenerationRequest(
-        text: text,
-        modelPath: _modelRecord!.modelPath,
-        tokensPath: _modelRecord!.tokensPath,
-        espeakDataDir: _modelRecord!.espeakDataDir,
+        text: normalizedText,
+        modelPath: selectedModelRecord.modelPath,
+        tokensPath: selectedModelRecord.tokensPath,
+        espeakDataDir: selectedModelRecord.espeakDataDir,
         outputPath: outputPath,
         speed: TtsConfig.speechSpeed,
         speakerId: TtsConfig.speakerId,
@@ -240,7 +372,7 @@ class PiperTtsService implements TtsService {
         debugPrint("TTS SPEAK: Running generation on isolate...");
       }
 
-      final response = await Isolate.run(() => _generateSpeech(request));
+      final response = await compute(_generateSpeechInIsolate, request);
 
       if (!response.success) {
         if (kDebugMode) {
@@ -256,23 +388,52 @@ class PiperTtsService implements TtsService {
         debugPrint("TTS SPEAK: Playing audio...");
       }
 
-      // Play the generated audio.
-      await _audioPlayer.play(DeviceFileSource(outputPath));
+      final completeSubscription = _audioPlayer.onPlayerComplete.listen((_) {
+        if (!playbackCompleter.isCompleted) {
+          playbackCompleter.complete();
+        }
+      });
+      final stateSubscription = _audioPlayer.onPlayerStateChanged.listen((
+        state,
+      ) {
+        if ((state == PlayerState.stopped || state == PlayerState.completed) &&
+            !playbackCompleter.isCompleted) {
+          playbackCompleter.complete();
+        }
+      });
 
-      if (kDebugMode) {
-        debugPrint("TTS SPEAK: Audio playback started");
+      try {
+        // Play after subscriptions are attached so we don't miss completion.
+        await _audioPlayer.play(DeviceFileSource(outputPath));
+
+        if (kDebugMode) {
+          debugPrint("TTS SPEAK: Audio playback started");
+        }
+
+        if (awaitPlaybackCompletion) {
+          await playbackCompleter.future.timeout(
+            const Duration(minutes: 2),
+            onTimeout: () {
+              if (kDebugMode) {
+                debugPrint("TTS SPEAK: Playback wait timed out");
+              }
+            },
+          );
+        }
+      } finally {
+        await completeSubscription.cancel();
+        await stateSubscription.cancel();
+        unawaited(_cleanupTempFile(outputPath));
       }
-
-      /// Cleanup the temp file after playback starts.
-      /// Note: We don't wait for playback to finish before cleaning up,
-      /// as audioplayers handles the file independently once started.
-      unawaited(_cleanupTempFile(outputPath));
     } catch (e) {
       if (kDebugMode) {
         debugPrint("TTS SPEAK: ERROR - $e");
       }
       // Silently ignore errors - the text is still shown in UI.
     } finally {
+      if (identical(_playbackCompleter, playbackCompleter)) {
+        _playbackCompleter = null;
+      }
       _isSpeaking = false;
       if (kDebugMode) {
         debugPrint("TTS SPEAK: Done");
@@ -284,6 +445,10 @@ class PiperTtsService implements TtsService {
   Future<void> stop() async {
     if (_isSpeaking) {
       await _audioPlayer.stop();
+      final playbackCompleter = _playbackCompleter;
+      if (playbackCompleter != null && !playbackCompleter.isCompleted) {
+        playbackCompleter.complete();
+      }
       _isSpeaking = false;
     }
   }
@@ -307,69 +472,6 @@ class PiperTtsService implements TtsService {
       }
     } catch (_) {
       // Ignore cleanup errors.
-    }
-  }
-
-  // Static method to run on isolate.
-  static _SpeechGenerationResponse _generateSpeech(
-    _SpeechGenerationRequest request,
-  ) {
-    try {
-      // Initialize sherpa_onnx bindings.
-      sherpa_onnx.initBindings();
-
-      // Create TTS configuration.
-      final vits = sherpa_onnx.OfflineTtsVitsModelConfig(
-        model: request.modelPath,
-        tokens: request.tokensPath,
-        dataDir: request.espeakDataDir,
-      );
-
-      final modelConfig = sherpa_onnx.OfflineTtsModelConfig(
-        vits: vits,
-        numThreads: request.numThreads,
-        debug: TtsConfig.debugMode,
-        provider: TtsConfig.onnxProvider,
-      );
-
-      final config = sherpa_onnx.OfflineTtsConfig(
-        model: modelConfig,
-        maxNumSenetences: TtsConfig.maxNumSentences,
-      );
-
-      // Create TTS engine.
-      final tts = sherpa_onnx.OfflineTts(config);
-
-      // Generate speech.
-      final audio = tts.generate(
-        text: request.text,
-        sid: request.speakerId,
-        speed: request.speed,
-      );
-
-      // Write to WAV file.
-      final success = sherpa_onnx.writeWave(
-        filename: request.outputPath,
-        samples: audio.samples,
-        sampleRate: audio.sampleRate,
-      );
-
-      // Free TTS resources.
-      tts.free();
-
-      if (!success) {
-        return const _SpeechGenerationResponse(
-          success: false,
-          error: "Failed to write WAV file",
-        );
-      }
-
-      return _SpeechGenerationResponse(
-        success: true,
-        sampleRate: audio.sampleRate,
-      );
-    } catch (e) {
-      return _SpeechGenerationResponse(success: false, error: e.toString());
     }
   }
 }

@@ -17,13 +17,20 @@ import 'package:talk_assist/search/search_injector.dart';
 /// Pairs the reply text with its origin so the UI can distinguish
 /// between online (OpenRouter), local (llamadart), and safe-mode fallback replies.
 class LlmOrchestratorReply {
-  const LlmOrchestratorReply({required this.text, required this.origin});
+  const LlmOrchestratorReply({
+    required this.text,
+    required this.origin,
+    this.usedOnlineSearch = false,
+  });
 
   /// The generated reply text.
   final String text;
 
   /// Which service produced this reply.
   final AssistantOrigin origin;
+
+  /// Whether the reply was generated with live web search context.
+  final bool usedOnlineSearch;
 }
 
 /// Routes user messages to the best available LLM backend.
@@ -72,7 +79,7 @@ class LlmOrchestrator {
        _localLlm = localLlmService,
        _safeModeLlm = safeModeLlmService,
        _connectivityCheck = connectivityCheck,
-        _searchInjector = searchInjector ?? SearchInjector();
+       _searchInjector = searchInjector ?? SearchInjector();
 
   final ModelRepository _modelRepository;
   final LlmService _onlineLlm;
@@ -120,6 +127,41 @@ class LlmOrchestrator {
     _latestHistory = List<ChatMessage>.from(history);
   }
 
+  /// Returns the best backend that appears usable right now.
+  ///
+  /// This is intentionally lightweight and cached by the OpenRouter service, so
+  /// the UI can refresh status periodically without running chat completions.
+  Future<AssistantOrigin> preferredBackend() async {
+    await start();
+
+    final onlineReady = await _onlineLlm.isReady();
+    if (kDebugMode) {
+      debugPrint('LLM preferred backend: onlineReady=$onlineReady.');
+    }
+    if (onlineReady) {
+      if (kDebugMode) {
+        debugPrint('LLM preferred backend selected: online.');
+      }
+      return AssistantOrigin.onlineLlm;
+    }
+
+    await _refreshLocalReadyFromService();
+    if (kDebugMode) {
+      debugPrint('LLM preferred backend: localReady=$_isLocalReady.');
+    }
+    if (_isLocalReady) {
+      if (kDebugMode) {
+        debugPrint('LLM preferred backend selected: on-device.');
+      }
+      return AssistantOrigin.localLlm;
+    }
+
+    if (kDebugMode) {
+      debugPrint('LLM preferred backend selected: safe mode.');
+    }
+    return AssistantOrigin.safeMode;
+  }
+
   /// Main entry point for getting a reply to user input.
   ///
   /// Routing logic:
@@ -151,60 +193,76 @@ class LlmOrchestrator {
       debugPrint('LLM request started (inputChars=${normalized.length}).');
     }
 
-    // Use normalizedWithSearch for LLMs so they have web context.
-    // inject search results if the message triggers a keyword match
-    // safemode unchanged, would be a waste of tokens
-    final normalizedWithSearch = await _searchInjector.injectIfNeeded(normalized);
-
     try {
       // ── 1. Try online (OpenRouter) ─────────────────────────────────────────
       final isOnline = await _hasLikelyInternetConnection();
-      if (isOnline) {
-        try {
-          final onlineReply = await _onlineLlm.generateReply(
-            userInput: normalizedWithSearch,
-            history: _historyForLlm(_latestHistory),
+      if (kDebugMode) {
+        debugPrint('Connectivity check before OpenRouter: isOnline=$isOnline');
+      }
+      try {
+        // Search context belongs to the online path only. The local model
+        // must remain a true offline fallback.
+        final normalizedWithSearch = isOnline
+            ? await _searchInjector.injectIfNeeded(normalized)
+            : normalized;
+        final usedOnlineSearch = normalizedWithSearch != normalized;
+        if (kDebugMode) {
+          debugPrint(
+            'OpenRouter attempt: searchInjected=$usedOnlineSearch, '
+            'inputChars=${normalizedWithSearch.length}.',
           );
-          _latestHistory = <ChatMessage>[
-            ..._latestHistory,
-            ChatMessage(
-              role: MsgRole.assistant,
-              text: onlineReply,
-              timestamp: DateTime.now(),
-              assistantOrigin: AssistantOrigin.localLlm,
-            ),
-          ];
-          if (kDebugMode) debugPrint('OpenRouter reply succeeded.');
-          return LlmOrchestratorReply(
-            text: onlineReply,
-            origin: AssistantOrigin.onlineLlm,
-          );
-        } catch (e) {
-          if (kDebugMode) {
-            debugPrint('OpenRouter failed, falling back to local model: $e');
-          }
+        }
+        final onlineReply = await _onlineLlm.generateReply(
+          userInput: normalizedWithSearch,
+          history: _historyForLlm(_latestHistory),
+        );
+        final cleanedOnlineReply = _cleanReplyText(onlineReply);
+        
+        _latestHistory = <ChatMessage>[
+          ..._latestHistory,
+          ChatMessage(
+            role: MsgRole.assistant,
+            text: cleanedOnlineReply,
+            timestamp: DateTime.now(),
+            assistantOrigin: AssistantOrigin.onlineLlm,
+          ),
+        ];
+        if (kDebugMode) debugPrint('OpenRouter reply succeeded.');
+        return LlmOrchestratorReply(
+          text: cleanedOnlineReply,
+          origin: AssistantOrigin.onlineLlm,
+          usedOnlineSearch: usedOnlineSearch,
+        );
+      } catch (e) {
+        if (kDebugMode) {
+          debugPrint('OpenRouter failed, falling back to local model: $e');
         }
       }
 
       // ── 2. Try local (llamadart / Qwen3.5) ────────────────────────────────
       final localReady = await _prepareLocalModel(triggerSource: 'send');
+      if (kDebugMode) {
+        debugPrint('Local fallback readiness after OpenRouter failure: $localReady');
+      }
       if (localReady) {
         try {
           final localReply = await _localLlm.generateReply(
-            userInput: normalizedWithSearch,
+            userInput: normalized,
             history: _historyForLlm(_latestHistory),
           );
+          final cleanedLocalReply = _cleanReplyText(localReply);
+          
           _latestHistory = <ChatMessage>[
             ..._latestHistory,
             ChatMessage(
               role: MsgRole.assistant,
-              text: localReply,
+              text: cleanedLocalReply,
               timestamp: DateTime.now(),
               assistantOrigin: AssistantOrigin.localLlm,
             ),
           ];
           return LlmOrchestratorReply(
-            text: localReply,
+            text: cleanedLocalReply,
             origin: AssistantOrigin.localLlm,
           );
         } catch (e) {
@@ -388,5 +446,16 @@ class LlmOrchestrator {
     await _onlineLlm.dispose();
     await _localLlm.dispose();
     await _safeModeLlm.dispose();
+  }
+
+  /// Cleans markdown formatting and citation links from the reply
+  /// so it reads naturally for visually impaired users.
+  String _cleanReplyText(String text) {
+    var cleaned = text;
+    // Remove markdown bold and italic asterisks
+    cleaned = cleaned.replaceAll('**', '').replaceAll('*', '');
+    // Remove citation tags like [1], [2][3], etc.
+    cleaned = cleaned.replaceAll(RegExp(r'\[\d+\]'), '');
+    return cleaned.trim();
   }
 }
