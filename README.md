@@ -1,66 +1,84 @@
-# Talk Assist
+# Talk Assist 2.0
 
-This is a Flutter project.
+A voice-first AI assistant for Android, designed for people who are blind or have low vision. You talk to it, and it talks back: no screen reading or tapping required.
 
-Talk Assist 2.0 is a mobile adaptation of Talk Assist 1.0, a voice-based software application that was designed to support visually impaired users. Allocating edge cutting functionalities like accent handling and environmental adaptation. This system will be developed by extending and modifying an existing prototype build by the previous team.
+Built as our senior capstone project (ICSI 499) at the University at Albany, SUNY, by a team of four. Talk Assist 2.0 extends Talk Assist 1.0, a desktop prototype built by a previous team, into a mobile app, starting with Android.
 
-Talk Assist 2.0 will focus on mobile application development, starting with android as the focus point, IOS implementation be considered after significate development process made in android platform. It will be evaluated through usage scenarios to assess its effectiveness and limitations as an assistive tool. Furthermore, offline capability and additional features will be added to post-public test adjustments.
+<!-- Add a screenshot or short demo GIF here, e.g.: ![Talk Assist chat screen](docs/screenshot.png) -->
 
-## How this is build
+## Features
 
-This project is build under flutter framework. The app uses the llamadart Flutter plugin to run Qwen3.5-0.8B Chat GGUF (Q8_0) locally. Virtial Device emulation is supported by Android Studio.
+- **Hands-free voice conversation:** wake-word activation, automatic speech detection, and continuous record/send cycles, so the user never has to touch the screen
+- **Works online or offline:** answers come from a cloud language model when there is internet, an on-device model when there isn't, and a safe fallback mode if neither is available
+- **Up-to-date answers:** questions about current events are grounded with live web search results
+- **Voice reminders:** create and manage reminders by speaking, connected to the device calendar
+- **Multilingual speech recognition and text-to-speech**
+- **Accessibility-first design:** audio-first interaction, guided by WCAG 2.1
 
-## Current Virtial Device Setup and specs
+## How it works
 
-Emulated Performance Section:
+The app follows an **Ear → Brain → Mouth** pipeline:
 
-- CPU cores: 4
-- Graphics acceleration: Automatic
-- RAM: 4 GB
-- VM heap size: 336 MB
-- Perferred ABI: Optimal
+| Stage | What it does | Technology |
+|-------|--------------|------------|
+| **Ear** | Detects speech and converts it to text, on the device | Sherpa ONNX: Whisper (speech-to-text), Silero VAD (speech detection), Sherpa-KWS (wake word) |
+| **Brain** | Generates a response, choosing the best available source | OpenRouter (cloud LLM) → Qwen3.5-0.8B (Q8_0 GGUF) via llamadart (on-device) → safe mode, with Serper web search for current information |
+| **Mouth** | Reads the response aloud, on the device | Sherpa ONNX: Piper (text-to-speech) |
 
-### Ideal spec:
+## Tech stack
 
-- 4-6 cores mobile CPU
-- 4-8 GB of RAMs
-- 128 GB of storage space
-- LTE-A / 5G internet connectivity, <150 ms latency
-- AI accelerator
+- **App:** Flutter / Dart (Android)
+- **Native integration:** Kotlin, via Flutter MethodChannels (calendar access)
+- **On-device AI:** Sherpa ONNX, llama.cpp (via llamadart)
+- **Cloud services:** OpenRouter API, Serper API
 
-## To run this project:
+## Running it
 
-First, make sure your have your emulation device up and running. 
+You need Flutter and [Android Studio](https://developer.android.com/studio) with the Dart plugin installed.
 
-- Visit https://developer.android.com/studio
-- You can also view this video till 1:35 (https://www.youtube.com/watch?v=ZXPUulPjl4c) for a visual walk-through of downloading Android Studio.
-- Download Android Studio Panda 4
-- In Android Studio, check the left panel for the “Plugin” option, and click it.
-- Make sure you download the “Dart” plugin for Android Studio.
-- Go back to “Projects” on the left panel.
-- Click on the three dots on the right-hand side
-- Open “Device Manager”
-- Select the “+” icon on the upper-left-hand side.
-- Select “Medium Phone”
-- Make sure you are using API verion 34 for the Andriod Phone
-- Go to the addition settings, scroll down, and change the RAM from 2 GB to 4 GB
-- Click “Finish” and start the device by clicking the triangle icon pointing to the right side, right next to the three-dots icon in Device Manager, on the right side.
-- Active the device and let it initialize.
+**1. Set up an emulator.** In Android Studio, open **Device Manager**, click **+**, and create a **Medium Phone** using **API 34**. Under the additional settings, raise the RAM from 2 GB to **4 GB** (the on-device model needs it), then start the device.
 
-Then open our code on the your local repo, cd /talk_assist, and run
+**2. Create your `.env` file (required).** In the `talk_assist` folder, copy `.env.example` to a new file named `.env`. The app won't build without this file, even if you leave it empty. To enable cloud features, fill in two keys: one from [OpenRouter](https://openrouter.ai) and one from [Serper](https://serper.dev). Without keys, the app runs using the on-device model.
 
+**3. Run the app:**
 ```
+cd talk_assist
+flutter pub get
 flutter run
 ```
 
-You can quit the app at anything with Ctrl + C
+To run without debug logs, use `flutter run --profile`. Press Ctrl+C to quit.
 
-To run the application without all the debug logs, use:
+On first launch, the app downloads the on-device model, which takes a few minutes.
 
+**Recommended device specs:** 4–6 core CPU, 4–8 GB RAM, and a fast connection (under 150 ms latency) for cloud features.
+
+### Developer commands
+
+Erase chat history:
 ```
-flutter run --profile
+adb shell run-as com.example.talk_assist rm -f app_flutter/history.json
 ```
+
+Clear all app data (settings, downloads, everything; the model re-downloads on next launch):
+```
+adb shell pm clear com.example.talk_assist
+```
+
+## My contributions (Dylan Walker)
+
+I focused on the assistant's online intelligence layer:
+
+- **OpenRouter integration:** built the service that handles all communication with the cloud language model, including message formatting, API key validation, connectivity-aware readiness checks, and tagging each response with its origin so the UI can show which service produced each reply
+- **Web search grounding pipeline:** designed and built the system that detects when a question needs current information, fetches live results from the Serper API, and adds them to the model's context so it can answer with up-to-date facts
+
+Key files: `open_router_llm_service.dart`, `search_config.dart`, `search_injector.dart`, `serper_search_service.dart`
 
 ## Team 6
 
-By Chaoji Yang, JunWei Zhuo, Kenny Huang, Dylan Walker
+- **Dylan Walker:** LLM and online features: OpenRouter integration and the web search grounding pipeline
+- **JunWei Zhuo:** speech recognition, multilingual support, and voice-driven reminders
+- **Kenny Huang:** LLM and TTS integration, prompt engineering, model benchmarking and evaluation; team secretary and main contact with our sponsor
+- **Chaoji Yang:** frontend architecture and the chat UI, conversation history, the voice pipeline (speech detection, auto record/send, wake word), and the online/offline state architecture
+
+This is a portfolio copy of our team's original repository, including its full commit history.
